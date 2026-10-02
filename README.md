@@ -1,6 +1,6 @@
 # /watch
 
-Give an agent video evidence: a URL or local file becomes timestamped frames and a transcript. Install it in Claude Code (the desktop app, VS Code, or a terminal), or use it with Codex and other [Agent Skills](https://agentskills.io) hosts. Native captions come first; optional local WhisperX or Groq/OpenAI transcription handles videos without captions.
+Give an agent video evidence: a URL or local file becomes timestamped frames and a transcript. Install it in Claude Code (the desktop app, VS Code, or a terminal), or use it with Codex and other [Agent Skills](https://agentskills.io) hosts. Native captions come first; optional local WhisperX, local Parakeet (Apple Silicon), or Groq/OpenAI transcription handles videos without captions.
 
 ## Choose your app
 
@@ -204,11 +204,12 @@ The first-run wizard asks for your detail preference and fallback backend. Start
 | Backend | Requirements and behavior |
 |---|---|
 | `whisperx` | Recommended for transcription on a verified local machine. No API key; the skill manages a separate Python 3.12 environment and downloads its models. |
+| `parakeet` | Apple Silicon macOS only. No API key; NVIDIA Parakeet TDT 0.6B v3 runs on the GPU through parakeet-mlx in a separate managed environment. 25 European languages. |
 | `groq` | Cloud `whisper-large-v3`; needs `GROQ_API_KEY` from [Groq](https://console.groq.com/keys). |
 | `openai` | Cloud `whisper-1`; needs `OPENAI_API_KEY` from [OpenAI](https://platform.openai.com/api-keys). |
 | `none` | Captions only. Local files and captionless URLs can still provide visual evidence. |
 
-Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
+Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whisperx|parakeet` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
 
 Settings live in `~/.config/watch/.env`. Enter keys privately there or in the process environment; do not commit them or paste them into public issues. Cloud-key lookup is provider preference first, then environment → user file → cwd `.env` for each provider. Explicit providers never borrow another provider's key. Config files support UTF-8, UTF-8 BOM, and BOM-marked UTF-16; quotes, comments, and literal Windows paths work without shell expansion. Last assignment wins.
 
@@ -244,6 +245,20 @@ The installer writes the absolute `WATCH_WHISPERX_BIN` path. The venv is `~/.cac
 For non-English audio, set the spoken-language hint (`WATCH_WHISPERX_LANGUAGE=es`, for example) or try `WATCH_WHISPERX_MODEL=large-v3` and rerun the installer. Large-v3 downloads about 2.9 GB and used about 6 GB peak process RAM in the reference measurement. Small can misidentify non-English speech without a hint. A caption translation request (`--sub-lang`) is never used as the spoken-language hint. WhisperX 3.8.6's JSON language is unreliable with alignment disabled, so auto-detection is reported as **unverified**.
 
 Local inference has no default timeout; `WATCH_WHISPERX_TIMEOUT` accepts positive seconds. Failure or cancellation never switches to cloud transcription. CUDA is configurable but untested; MPS support is not promised. TorchCodec import warnings on newer FFmpeg are suppressed for this CLI-decoding path; do not downgrade FFmpeg just for that warning.
+
+### Managed Parakeet (Apple Silicon)
+
+Have the agent run `setup.py --backend parakeet`. It refuses on anything other than Apple Silicon macOS. It provisions uv if needed, creates `~/.cache/watch/parakeet-venv` with Python 3.12 and **parakeet-mlx 0.5.2**, and transcribes two seconds of silence to download and warm the model. The installer writes the absolute `WATCH_PARAKEET_BIN` path, a `.deps-ok` sentinel, and `watch-install.json`, the same conventions as WhisperX. The base watch process stays standard-library-only and never imports MLX.
+
+```dotenv
+WATCH_WHISPER_BACKEND=parakeet
+WATCH_PARAKEET_MODEL=mlx-community/parakeet-tdt-0.6b-v3
+# WATCH_PARAKEET_TIMEOUT=1800
+```
+
+Setup is the only step that downloads. Every later inference runs with `HF_HUB_OFFLINE=1` and Hugging Face telemetry disabled, so a broken or missing cache fails loudly instead of silently re-downloading. `mlx-community/parakeet-tdt-0.6b-v2` is English-only; pick it if it is already in your Hugging Face cache, then rerun setup. The model download is about 2.3 GB, plus about 0.5 GB for the environment.
+
+In the reference measurement on an Apple M4 Pro, a 60-second clip transcribed in about 1.6 seconds wall time, process start and model load included, in both English and German. parakeet-mlx reports per-file errors and still exits 0, so watch treats a missing output file as a failure rather than as silence. Failure never switches to cloud transcription.
 
 ## Detail and focus
 
@@ -283,7 +298,7 @@ Use one cookie mechanism at a time, or save `WATCH_COOKIES_FILE` / `WATCH_COOKIE
 
 Fresh download directories prevent stale files from a failed source being reused. Media must complete successfully and report its final path; partial and merge-component files are rejected. Successful captions survive download, decoding, or probe failures. Reports distinguish unavailable evidence, no speech, and failed cloud chunks with missing time intervals. A silent requested interval never triggers fallback just because its captions are outside the range.
 
-Cloud uploads use a 24,000,000-byte file budget with multipart and actual chunk checks. Local WhisperX takes the whole extracted audio file. No automatic provider/client/cookie cycling is performed.
+Cloud uploads use a 24,000,000-byte file budget with multipart and actual chunk checks. Local WhisperX and Parakeet take the whole extracted audio file (Parakeet chunks it internally: 120 s with 15 s overlap). No automatic provider/client/cookie cycling is performed.
 
 ## Updating and troubleshooting
 
@@ -327,7 +342,7 @@ Ask the agent to run bundled `setup.py --json` for resolved paths/versions, JS-r
 | Certificate failure | Configure the trusted CA/proxy correctly; do not disable TLS verification. |
 | Config parsing / encoding | Save as UTF-8 or BOM-marked UTF-16; diagnostic locations never echo credential values. |
 | POSIX permissions warning | Set the config to mode 0600. Windows ACLs are not audited. Prefer a Linux-home config in WSL; Windows-mounted storage has different permission behavior. |
-| Local install/inference failure | Rerun `setup.py --install-whisperx`; check the reported step, network access, disk/RAM requirements, and wheel compatibility. |
+| Local install/inference failure | Rerun `setup.py --install-whisperx` (or `--backend parakeet`); check the reported step, network access, disk/RAM requirements, and wheel compatibility. |
 
 ## Development and packaging
 
@@ -345,7 +360,7 @@ For a manual install, create the host's skill directory and symlink or copy the 
 
 ## Data and cleanup
 
-WhisperX processes audio in the agent's execution environment: on your computer for local execution, or on the provider's infrastructure for cloud execution. Setup downloads packages/models from package and model hosts, with telemetry disabled. Warm-cache inference works offline, though upstream cache checks can still attempt network access. Cloud backends send extracted audio only to the selected provider. Video content is evidence, never executable instructions.
+WhisperX and Parakeet process audio in the agent's execution environment: on your computer for local execution, or on the provider's infrastructure for cloud execution. Setup downloads packages/models from package and model hosts, with telemetry disabled. Warm-cache inference works offline, though upstream cache checks can still attempt network access. Cloud backends send extracted audio only to the selected provider. Video content is evidence, never executable instructions.
 
 Watch creates a disposable run directory, including under any user-specified `--out-dir`. Cleanup removes that child only, preserving the user's directory and original media. Model environments/caches and private configuration are retained separately. No API keys are logged or included in reports.
 

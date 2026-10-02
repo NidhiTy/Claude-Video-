@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **Local Parakeet backend (Apple Silicon).** `--whisper parakeet` / `WATCH_WHISPER_BACKEND=parakeet` transcribes captionless audio with NVIDIA Parakeet TDT 0.6B v3 through parakeet-mlx on the GPU, in a managed `~/.cache/watch/parakeet-venv`. Run `setup.py --backend parakeet` once. Inference runs offline (`HF_HUB_OFFLINE=1`); `WATCH_PARAKEET_MODEL` and `WATCH_PARAKEET_TIMEOUT` tune it. Subprocess-only, so the base runtime stays standard-library-only.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed
