@@ -67,7 +67,8 @@ Then ask: **For videos without captions, how should watch transcribe?** Present:
 1. `whisperx` (recommended): local transcription, no API key; audio stays on the machine. One-time download of about 1.5 GB. Requires 3 GB free disk, 8 GB RAM, and a compatible 64-bit CPU. Apple Silicon macOS is verified; Linux/Windows recipes and Intel macOS are untested.
 2. `groq`: fast cloud transcription, needs a Groq key.
 3. `openai`: cloud transcription, needs an OpenAI key.
-4. `none`: captions only; no speech fallback.
+4. `parakeet`: local transcription on **Apple Silicon macOS only**, no API key; audio stays on the machine. NVIDIA Parakeet TDT 0.6B v3 via parakeet-mlx on the GPU, 25 European languages, much faster than CPU WhisperX. One-time download of about 2.8 GB (packages plus model).
+5. `none`: captions only; no speech fallback.
 
 Use an existing explicit backend choice without asking again. Do not treat silence as permission to install local models or upload audio; the no-key/no-install path remains available.
 
@@ -75,7 +76,7 @@ Complete the selected setup using the user's detail value:
 
 ```bash
 python3 "${SKILL_DIR}/scripts/setup.py" --backend whisperx --detail balanced
-# Or: --backend groq / openai / none
+# Or: --backend parakeet / groq / openai / none
 ```
 
 For WhisperX, relay progress while the installer provisions uv, Python 3.12, pinned dependencies, and both model caches. `setup.py --install-whisperx` reruns this managed installer if needed. It writes the backend, executable, model, and completion marker only after warm-up succeeds. A failed local installation never selects a cloud backend automatically.
@@ -114,7 +115,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "<URL-or-local-path>" --question "<the u
 | `--resolution W` | Frame width, default 512; raise to 1024 for text when needed |
 | `--fps F` | Positive uniform rate override, at most 2 fps and reduced to fit the remaining cap |
 | `--no-dedup` | Preserve near-identical selected frames |
-| `--whisper groq|openai|whisperx` | Select this run's fallback; captions still come first |
+| `--whisper groq|openai|whisperx|parakeet` | Select this run's fallback; captions still come first |
 | `--no-whisper` | Disable every speech fallback, including local; conflicts with `--whisper` |
 | `--sub-lang CODE` | Select one exact caption language; default `auto` prefers original-language evidence |
 | `--cookies FILE` | Explicit cookie jar; yt-dlp may update it |
@@ -143,7 +144,7 @@ For a presenter saying “look here,” “notice this,” or similar:
 
 Full-track caption availability is checked before focus filtering. A silent focus interval does not trigger another transcription request. Reports distinguish no speech, disabled fallback, failed modalities, and missing cloud-chunk intervals.
 
-`WATCH_WHISPER_BACKEND=auto|groq|openai|whisperx|none` chooses the saved fallback. In `auto`, each provider looks up its key in environment → user config → cwd `.env`, preferring Groq before checking OpenAI. Explicit provider choices never borrow another provider's key.
+`WATCH_WHISPER_BACKEND=auto|groq|openai|whisperx|parakeet|none` chooses the saved fallback. In `auto`, each provider looks up its key in environment → user config → cwd `.env`, preferring Groq before checking OpenAI. Explicit provider choices never borrow another provider's key.
 
 WhisperX defaults: `WATCH_WHISPERX_MODEL=small`, `WATCH_WHISPERX_DEVICE=cpu`, `WATCH_WHISPERX_COMPUTE_TYPE=int8`, `WATCH_WHISPERX_BATCH_SIZE=8`. No alignment or diarization is run. `WATCH_WHISPERX_LANGUAGE=es` (for example) gives a spoken-language hint; never infer it from `--sub-lang`, which may request a translation. Without a hint, auto-detection is used but reported as unverified because WhisperX 3.8.6 mislabels its JSON language when alignment is disabled.
 
@@ -161,8 +162,9 @@ For follow-ups, reuse evidence already viewed before rerunning. Remove only the 
 - With the Gemini engine, YouTube URLs are sent to Google and local or downloaded videos are uploaded to Google's Files API (generativelanguage.googleapis.com), then deleted after the answer; an upload that cannot be deleted expires within 48 hours. The key is sent only as a request header. The local engine never contacts Google.
 - FFmpeg/ffprobe run locally for probing, frames, and mono audio extraction.
 - With `whisperx` selected, audio never leaves the machine. First setup downloads packages and models from PyPI, Hugging Face, and GitHub, with uv/Python installers as needed. Pyannote telemetry is disabled. Warm caches allow offline inference; model libraries may still attempt cache/update network checks.
+- With `parakeet` selected, audio never leaves the machine. Setup creates `~/.cache/watch/parakeet-venv` (parakeet-mlx 0.5.2) and downloads the model from Hugging Face once; every later inference runs with `HF_HUB_OFFLINE=1` and Hugging Face telemetry disabled. `WATCH_PARAKEET_MODEL` picks another checkpoint (default `mlx-community/parakeet-tdt-0.6b-v3`; `-v2` is English-only); rerun `setup.py --backend parakeet` to warm it. `WATCH_PARAKEET_TIMEOUT` optionally sets positive seconds.
 - With `groq` or `openai` selected, only extracted audio is uploaded to that provider's transcription endpoint; keys are never shared between providers or logged by watch.
 - Runtime artifacts live in this run's working directory. User settings/keys live in `~/.config/watch/.env`; cwd `.env` is a cloud-key fallback. POSIX writes use mode 0600; Windows ACLs are not audited. Use a Linux-home config in WSL, since Windows-mounted homes have different permission semantics.
 - The managed environment lives at `~/.cache/watch/whisperx-venv`, outside the plugin. Model caches normally live at `~/.cache/huggingface` and `~/.cache/torch/hub`. uv also caches packages and managed Python. Reinstalling the skill does not remove these.
 
-Bundled scripts: `watch.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `local_whisperx.py`, `gemini.py`, `config.py`, `runtime.py`, and `setup.py` under `scripts/`. The base runtime uses only Python's standard library; optional WhisperX dependencies remain in its separate process/environment.
+Bundled scripts: `watch.py`, `download.py`, `frames.py`, `transcribe.py`, `whisper.py`, `local_whisperx.py`, `local_parakeet.py`, `gemini.py`, `config.py`, `runtime.py`, and `setup.py` under `scripts/`. The base runtime uses only Python's standard library; optional WhisperX and Parakeet dependencies remain in their separate processes/environments.

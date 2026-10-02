@@ -125,7 +125,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai", "whisperx"],
+        choices=["groq", "openai", "whisperx", "parakeet"],
         default=None,
         help="Select the fallback backend for this run; native captions still come first.",
     )
@@ -265,7 +265,7 @@ def main() -> int:
 
     transcript_state = "missing"
     if not track_available and backend_choice != "none" and video_path and meta.get("has_audio"):
-        backend, api_key = ("whisperx", None) if backend_choice == "whisperx" else load_api_key(None if backend_choice == "auto" else backend_choice)
+        backend, api_key = (backend_choice, None) if backend_choice in ("whisperx", "parakeet") else load_api_key(None if backend_choice == "auto" else backend_choice)
         if backend:
             try:
                 all_segments, used_backend = transcribe_video(video_path, work / "audio.mp3", backend=backend, api_key=api_key)
@@ -275,6 +275,8 @@ def main() -> int:
                 if used_backend == "whisperx":
                     language = config["whisperx_language"] or "auto (unverified)"
                     transcript_source = f"whisper (whisperx {config['whisperx_model']}, language {language})"
+                elif used_backend == "parakeet":
+                    transcript_source = f"local parakeet ({config['parakeet_model']})"
                 else:
                     transcript_source = f"whisper ({used_backend})"
             except SystemExit as exc:

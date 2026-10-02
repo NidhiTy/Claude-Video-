@@ -18,9 +18,10 @@ from runtime import configure_stdio, diagnostic, run_text
 
 REQUIRED_BINARIES = ['ffmpeg', 'ffprobe', 'yt-dlp']
 WHISPERX_VERSION = '3.8.6'
+PARAKEET_VERSION = '0.5.2'
 _PERM_WARNED: set[str] = set()
 ENV_TEMPLATE = '''# /watch configuration. No shell interpolation; last assignment wins.
-# Native captions always come first. Optional fallback: auto|whisperx|groq|openai|none.
+# Native captions always come first. Optional fallback: auto|whisperx|parakeet|groq|openai|none.
 # auto preserves the Groq-then-OpenAI preference for existing installations.
 # The first-run skill wizard sets WATCH_DETAIL and WATCH_WHISPER_BACKEND.
 # WATCH_ENGINE=auto|gemini|local. auto uses Gemini when GEMINI_API_KEY is set.
@@ -155,7 +156,10 @@ def _status(detailed=False):
     chosen = cfg['whisper_backend']
     backend = detected if chosen == 'auto' else chosen
     local_ready = _whisperx_status(cfg, detailed)
-    backend_ready = local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
+    parakeet_bin = Path(cfg['parakeet_bin']) if cfg['parakeet_bin'] else None
+    parakeet_ready = bool(parakeet_bin and parakeet_bin.is_absolute() and parakeet_bin.is_file()
+                          and (parakeet_bin.parent.parent / '.deps-ok').is_file())
+    backend_ready = local_ready if chosen == 'whisperx' else parakeet_ready if chosen == 'parakeet' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
     blocked = bool(missing) and binaries_required
     result = {'status': 'needs_install' if blocked else 'ready', 'can_proceed': not blocked,
               'engine': engine, 'configured_engine': cfg['engine'], 'gemini_key_present': gemini_key,
@@ -164,7 +168,9 @@ def _status(detailed=False):
               'missing_binaries': missing, 'whisper_backend': backend, 'configured_backend': chosen,
               'has_api_key': has_key, 'backend_ready': backend_ready,
               'whisperx_ready': local_ready, 'whisperx_bin': cfg['whisperx_bin'],
-              'whisperx_model': cfg['whisperx_model'], 'config_file': str(CONFIG_FILE),
+              'whisperx_model': cfg['whisperx_model'], 'parakeet_ready': parakeet_ready,
+              'parakeet_bin': cfg['parakeet_bin'], 'parakeet_model': cfg['parakeet_model'],
+              'config_file': str(CONFIG_FILE),
               'watch_detail': cfg['detail'], 'platform': platform.system()}
     if detailed:
         tools = {}
@@ -226,6 +232,8 @@ def cmd_install(backend=None, detail=None, engine=None):
         write_settings({'WATCH_DETAIL': detail}, CONFIG_FILE)
     if backend == 'whisperx':
         return install_whisperx()
+    if backend == 'parakeet':
+        return install_parakeet()
     if backend:
         write_settings({'WATCH_WHISPER_BACKEND': backend}, CONFIG_FILE)
         if backend in ('groq', 'openai') and not load_api_key(backend)[1]:
@@ -312,13 +320,55 @@ def install_whisperx():
     return 0
 
 
+def install_parakeet():
+    """Opt-in managed parakeet-mlx venv (Apple Silicon only); ready only after an offline-capable warm-up."""
+    import local_parakeet
+    if platform.system() != 'Darwin' or platform.machine() != 'arm64':
+        raise SystemExit('Parakeet (parakeet-mlx) needs Apple Silicon macOS; choose whisperx or none instead.')
+    if not _which('ffmpeg'):
+        raise SystemExit('Install FFmpeg first, then rerun setup.py --backend parakeet.')
+    cfg = local_parakeet.settings()
+    _scaffold_env()
+    uv = _ensure_uv()
+    venv = Path.home() / '.cache' / 'watch' / 'parakeet-venv'
+    sentinel = venv / '.deps-ok'
+    python = venv / 'bin' / 'python'
+    executable = venv / 'bin' / 'parakeet-mlx'
+    if not (sentinel.is_file() and python.is_file() and executable.is_file()):
+        if venv.is_symlink():
+            raise SystemExit('Managed Parakeet venv is a symlink; choose a regular managed directory before installing.')
+        if venv.exists():
+            shutil.rmtree(venv)  # Only this fixed, installer-owned environment.
+        venv.parent.mkdir(parents=True, exist_ok=True)
+        _install_step([uv, 'venv', str(venv), '--python', '3.12'], 'Create Parakeet Python 3.12 environment')
+        _install_step([uv, 'pip', 'install', '--python', python, f'parakeet-mlx=={PARAKEET_VERSION}'], 'Install parakeet-mlx')
+    sentinel.unlink(missing_ok=True)
+    cfg['parakeet_bin'] = str(executable)
+    with tempfile.TemporaryDirectory(prefix='watch-warmup-') as temporary:
+        audio = Path(temporary) / 'silence.mp3'
+        _install_step(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
+                       'anullsrc=r=16000:cl=mono', '-t', '2', '-acodec', 'libmp3lame', str(audio)], 'Create warm-up audio')
+        # Warm-up may download the model once; every later inference runs with HF_HUB_OFFLINE=1.
+        local_parakeet.transcribe_audio(audio, cfg, require_ready=False, offline=False)
+    resolved = run_text([str(uv), 'pip', 'list', '--python', str(python), '--format', 'json'], timeout=60)
+    if resolved.returncode:
+        raise SystemExit(f'Could not record the Parakeet install: {diagnostic(resolved.stderr)}')
+    (venv / 'watch-install.json').write_text(json.dumps({'parakeet-mlx': PARAKEET_VERSION, 'model': cfg['parakeet_model'],
+                                                       'packages': json.loads(resolved.stdout)}, indent=2), encoding='utf-8')
+    sentinel.write_text(PARAKEET_VERSION + '\n', encoding='utf-8')
+    write_settings({'WATCH_WHISPER_BACKEND': 'parakeet', 'WATCH_PARAKEET_BIN': str(executable),
+                    'WATCH_PARAKEET_MODEL': cfg['parakeet_model'], 'SETUP_COMPLETE': 'true'}, CONFIG_FILE)
+    print('[setup] Parakeet is ready; the model cache is warmed and inference runs offline.', file=sys.stderr)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--check', action='store_true')
     mode.add_argument('--json', action='store_true')
     mode.add_argument('--install-whisperx', action='store_true')
-    parser.add_argument('--backend', choices=['auto', 'whisperx', 'groq', 'openai', 'none'])
+    parser.add_argument('--backend', choices=['auto', 'whisperx', 'parakeet', 'groq', 'openai', 'none'])
     parser.add_argument('--detail', choices=sorted(DETAILS))
     parser.add_argument('--engine', choices=sorted(ENGINES))
     args = parser.parse_args()
