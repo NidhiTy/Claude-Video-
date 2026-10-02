@@ -99,7 +99,12 @@ def select_caption(info: dict, language: str = 'auto') -> dict | None:
     automatic = {k: v for k, v in (info.get('automatic_captions') or {}).items() if v and k != 'live_chat'}
     youtube = str(info.get('extractor_key') or info.get('extractor') or '').lower().startswith('youtube')
     originals = sorted(k for k in automatic if youtube and k.endswith('-orig'))
-    original = originals[0][:-5] if len(originals) == 1 else None
+    # Dubbed videos carry one -orig ASR track per audio language, so only a lone -orig
+    # proves the source language; with several, trust the one matching yt-dlp's language.
+    declared = str(info.get('language') or '').split('-')[0].lower()
+    candidates = originals if len(originals) == 1 else [
+        k for k in originals if declared and k[:-5].split('-')[0].lower() == declared]
+    original = candidates[0][:-5] if len(candidates) == 1 else None
     target = language if language != 'auto' else original or info.get('language')
     def matches(key):
         base = key.removesuffix('-orig')
@@ -114,9 +119,10 @@ def select_caption(info: dict, language: str = 'auto') -> dict | None:
             keys = sorted((k for k in keys if matches(k)), key=lambda k: (k != target, k != f'{target}-orig', k))
         if keys:
             key = keys[0]
-            # Auto mode must prefer original ASR to translated/dubbed metadata.
-            if kind == 'automatic' and language == 'auto' and originals:
-                key = originals[0]
+            # Auto mode must prefer original ASR to translated/dubbed metadata, but only
+            # within the selected language: a dub's -orig track is not the source.
+            if kind == 'automatic' and language == 'auto':
+                key = next((k for k in keys if k.endswith('-orig')), key)
             base = key.removesuffix('-orig')
             provenance = 'original' if original and base.split('-')[0] == original.split('-')[0] else 'unknown'
             if language != 'auto' and original and base.split('-')[0] != original.split('-')[0]:

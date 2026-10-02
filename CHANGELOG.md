@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Dubbed YouTube videos no longer get another language's captions. YouTube exposes one `-orig` ASR track per audio language on dubbed videos, and auto mode picked the alphabetically first one (`bn-orig`, `de-DE-orig`) for English sources. With several `-orig` tracks, selection now trusts the one matching yt-dlp's declared language and never swaps to a different language's `-orig` track (#247).
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed
