@@ -145,3 +145,29 @@ def test_engine_gemini_with_key_completes_setup_and_preserves_lines(monkeypatch)
     assert '# my notes' in text and 'GROQ_API_KEY=keep-me' in text
     values = config.read_env_file(config.CONFIG_FILE)
     assert values['WATCH_ENGINE'] == 'gemini' and values['SETUP_COMPLETE'] == 'true'
+
+
+def test_engine_vertex_asks_for_credentials_then_completes_without_binaries(monkeypatch, capsys, tmp_path):
+    from conftest import build_service_account_key
+    monkeypatch.setattr(setup, '_check_binaries', lambda: list(setup.REQUIRED_BINARIES))
+    assert setup.cmd_install(engine='vertex') == 3
+    assert 'WATCH_VERTEX_CREDENTIALS' in capsys.readouterr().err
+    assert config.read_env_file(config.CONFIG_FILE)['WATCH_ENGINE'] == 'vertex' and setup.is_first_run()
+    assert setup._status()['engine'] == 'vertex' and setup._status()['vertex_credentials_present'] is False
+    config.write_settings({'WATCH_VERTEX_CREDENTIALS': str(build_service_account_key(tmp_path / 'key.json'))})
+    assert setup.cmd_install(engine='vertex') == 0
+    out = capsys.readouterr().out
+    assert 'unit-project' in out and 'WATCH_VERTEX_BUCKET' in out
+    status = setup._status()
+    assert status['engine'] == 'vertex' and status['vertex_credentials_present'] is True
+    assert status['vertex_bucket_present'] is False and status['binaries_required'] is False
+    assert status['can_proceed'] is True and not setup.is_first_run()
+    assert 'PRIVATE KEY' not in json.dumps(status)
+
+
+def test_engine_vertex_rejects_an_unusable_key_file(tmp_path, capsys, monkeypatch):
+    (tmp_path / 'key.json').write_text('{"type": "authorized_user"}')
+    config.write_settings({'WATCH_VERTEX_CREDENTIALS': str(tmp_path / 'key.json')})
+    monkeypatch.setattr(setup.sys, 'argv', ['setup.py', '--engine', 'vertex'])
+    assert setup.main() == 2
+    assert 'not a usable service-account' in capsys.readouterr().err and setup.is_first_run()

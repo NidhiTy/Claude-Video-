@@ -13,7 +13,7 @@ CONFIG_FILE = CONFIG_DIR / '.env'
 DEFAULT_DETAIL = 'balanced'
 DETAILS = {'transcript', 'efficient', 'balanced', 'token-burner'}
 BACKENDS = {'auto', 'groq', 'openai', 'whisperx', 'none'}
-ENGINES = {'auto', 'gemini', 'local'}
+ENGINES = {'auto', 'gemini', 'vertex', 'local'}
 DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash'
 
 
@@ -120,13 +120,19 @@ def load_gemini_key() -> str | None:
     return value or None
 
 
-def resolve_engine(choice: str, has_key: bool) -> str:
+def resolve_engine(choice: str, has_key: bool, has_vertex: bool = False) -> str:
     if choice not in ENGINES:
-        raise ConfigError('WATCH_ENGINE must be auto, gemini, or local.')
+        raise ConfigError('WATCH_ENGINE must be auto, gemini, vertex, or local.')
     if choice == 'gemini' and not has_key:
         raise ConfigError('The gemini engine needs GEMINI_API_KEY in the environment or '
                           f'{CONFIG_FILE}. Add it, or rerun with --engine local.')
-    return 'gemini' if choice == 'gemini' or (choice == 'auto' and has_key) else 'local'
+    if choice == 'vertex' and not has_vertex:
+        raise ConfigError('The vertex engine needs WATCH_VERTEX_CREDENTIALS (the path to a service-account '
+                          f'JSON key) in the environment or {CONFIG_FILE}. Add it, or rerun with --engine local.')
+    if choice != 'auto':
+        return choice
+    # A deliberately configured service account outranks an API key.
+    return 'vertex' if has_vertex else 'gemini' if has_key else 'local'
 
 
 def get_config(*, backend_override: str | None = None) -> dict:
@@ -139,7 +145,7 @@ def get_config(*, backend_override: str | None = None) -> dict:
         raise ConfigError('WATCH_WHISPER_BACKEND must be auto, groq, openai, whisperx, or none.')
     engine = setting('WATCH_ENGINE', 'auto')
     if engine not in ENGINES:
-        raise ConfigError('WATCH_ENGINE must be auto, gemini, or local.')
+        raise ConfigError('WATCH_ENGINE must be auto, gemini, vertex, or local.')
     return {
         'detail': detail if detail in DETAILS else DEFAULT_DETAIL,
         'config_file': str(CONFIG_FILE),
@@ -147,6 +153,8 @@ def get_config(*, backend_override: str | None = None) -> dict:
         'engine': engine,
         'gemini_model': setting('WATCH_GEMINI_MODEL', DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL,
         'gemini_timeout': positive_number(setting('WATCH_GEMINI_TIMEOUT', '600'), 'WATCH_GEMINI_TIMEOUT'),
+        'vertex_credentials': setting('WATCH_VERTEX_CREDENTIALS'),
+        'vertex_bucket': setting('WATCH_VERTEX_BUCKET'),
         'sub_lang': setting('WATCH_SUB_LANG', 'auto'),
         'cookies_file': setting('WATCH_COOKIES_FILE'),
         'cookies_from_browser': setting('WATCH_COOKIES_FROM_BROWSER'),
