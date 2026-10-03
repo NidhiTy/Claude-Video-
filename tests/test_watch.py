@@ -284,3 +284,60 @@ def test_failed_upload_is_reported_honestly_and_work_dir_removed(monkeypatch, ca
     assert 'URL sent to Google' not in out and 'upload to Google failed' in out
     assert out_dir.is_dir() and list(out_dir.iterdir()) == [], 'the run-owned work dir must be removed'
     assert static_clip.is_file(), 'the user source file is never deleted'
+
+
+def _vertex_answer(monkeypatch, seen):
+    import vertex
+    def fake_ask(video, question, **kw):
+        seen.update(video=video, question=question, **kw)
+        return {'text': 'At 00:10 it turns blue.', 'model': kw['model'], 'processing': 'agentic via Vertex AI', 'total_tokens': 7}
+    monkeypatch.setattr(vertex, 'ask', fake_ask)
+
+
+def test_vertex_uploads_to_the_bucket_asks_then_deletes_and_outranks_the_api_key(monkeypatch, capsys, static_clip, tmp_path):
+    import gemini
+    import vertex
+    from conftest import build_service_account_key
+    seen, deleted = {}, []
+    _vertex_answer(monkeypatch, seen)
+    monkeypatch.setattr(vertex, 'upload_file', lambda path, key: {
+        'name': 'watch/abc.mp4', 'uri': 'gs://clips/watch/abc.mp4', 'mime_type': 'video/mp4',
+        'sent': 'video uploaded to your Cloud Storage bucket, deleted after the answer'})
+    monkeypatch.setattr(vertex, 'delete_file', lambda name, key: deleted.append(name))
+    for name in ('ask', 'upload_file'):
+        monkeypatch.setattr(gemini, name, lambda *a, **kw: pytest.fail('a configured service account outranks the API key'))
+    monkeypatch.setenv('GEMINI_API_KEY', 'unit-key')
+    monkeypatch.setenv('WATCH_VERTEX_CREDENTIALS', str(build_service_account_key(tmp_path / 'key.json')))
+    monkeypatch.setenv('WATCH_VERTEX_BUCKET', 'gs://clips')
+    monkeypatch.setattr(sys, 'argv', ['watch', str(static_clip), '--start', '0:20'])
+    assert watch.main() == 0
+    assert seen['video'] == {'uri': 'gs://clips/watch/abc.mp4', 'mime_type': 'video/mp4'}
+    assert seen['clip'] == (20.0, None) and seen['model'] == 'gemini-3.7-flash'
+    assert (seen['key']['project'], seen['key']['bucket']) == ('unit-project', 'clips')
+    assert deleted == ['watch/abc.mp4']
+    out = capsys.readouterr().out
+    assert 'uploaded to your Cloud Storage bucket' in out and '**Engine:** gemini-3.7-flash (agentic via Vertex AI)' in out
+    assert '## Answer (from Gemini)' in out and 'PRIVATE KEY' not in out
+
+
+def test_vertex_without_a_bucket_serves_youtube_and_refuses_other_sources_before_any_work(monkeypatch, capsys, tmp_path):
+    from config import ConfigError
+    from conftest import build_service_account_key
+    seen = {}
+    _vertex_answer(monkeypatch, seen)
+    monkeypatch.setenv('WATCH_VERTEX_CREDENTIALS', str(build_service_account_key(tmp_path / 'key.json')))
+    monkeypatch.setattr(watch, 'download', lambda *a, **kw: pytest.fail('must fail before downloading'))
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://youtu.be/abc', '--engine', 'vertex'])
+    assert watch.main() == 0
+    assert seen['video'] == {'uri': 'https://youtu.be/abc'} and 'URL sent to Google' in capsys.readouterr().out
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://vimeo.com/1', '--engine', 'vertex'])
+    with pytest.raises(ConfigError, match='WATCH_VERTEX_BUCKET'):
+        watch.main()
+
+
+def test_explicit_vertex_without_credentials_fails_before_any_work(monkeypatch):
+    from config import ConfigError
+    monkeypatch.setattr(watch, 'download', lambda *a, **kw: pytest.fail('must fail before downloading'))
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://vimeo.com/1', '--engine', 'vertex'])
+    with pytest.raises(ConfigError, match='WATCH_VERTEX_CREDENTIALS'):
+        watch.main()

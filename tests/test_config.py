@@ -110,10 +110,31 @@ def test_explicit_gemini_without_key_is_a_safe_error():
 
 
 def test_invalid_engine_and_timeout_rejected(monkeypatch):
-    monkeypatch.setenv('WATCH_ENGINE', 'vertex')
+    monkeypatch.setenv('WATCH_ENGINE', 'cloud')
     with pytest.raises(config.ConfigError, match='WATCH_ENGINE'):
         config.get_config()
     monkeypatch.setenv('WATCH_ENGINE', 'auto')
     monkeypatch.setenv('WATCH_GEMINI_TIMEOUT', '-5')
     with pytest.raises(config.ConfigError, match='WATCH_GEMINI_TIMEOUT'):
         config.get_config()
+
+
+def test_vertex_engine_resolution():
+    assert config.resolve_engine('auto', has_key=True, has_vertex=True) == 'vertex'
+    assert config.resolve_engine('auto', has_key=False, has_vertex=True) == 'vertex'
+    assert config.resolve_engine('gemini', has_key=True, has_vertex=True) == 'gemini'
+    assert config.resolve_engine('local', has_key=True, has_vertex=True) == 'local'
+    with pytest.raises(config.ConfigError, match='WATCH_VERTEX_CREDENTIALS'):
+        config.resolve_engine('vertex', has_key=True, has_vertex=False)
+
+
+def test_vertex_settings_come_from_environment_or_user_file_never_a_project_env(monkeypatch):
+    """A cloned project's .env must not be able to route videos to someone else's cloud project."""
+    Path('.env').write_text('WATCH_VERTEX_CREDENTIALS=/project/key.json\nWATCH_VERTEX_BUCKET=project-bucket\n')
+    cfg = config.get_config()
+    assert (cfg['vertex_credentials'], cfg['vertex_bucket']) == ('', '')
+    config.write_settings({'WATCH_VERTEX_CREDENTIALS': '/user/key.json', 'WATCH_VERTEX_BUCKET': 'user-bucket'})
+    cfg = config.get_config()
+    assert (cfg['vertex_credentials'], cfg['vertex_bucket']) == ('/user/key.json', 'user-bucket')
+    monkeypatch.setenv('WATCH_VERTEX_BUCKET', 'env-bucket')
+    assert config.get_config()['vertex_bucket'] == 'env-bucket'

@@ -23,9 +23,14 @@ ENV_TEMPLATE = '''# /watch configuration. No shell interpolation; last assignmen
 # Native captions always come first. Optional fallback: auto|whisperx|groq|openai|none.
 # auto preserves the Groq-then-OpenAI preference for existing installations.
 # The first-run skill wizard sets WATCH_DETAIL and WATCH_WHISPER_BACKEND.
-# WATCH_ENGINE=auto|gemini|local. auto uses Gemini when GEMINI_API_KEY is set.
+# WATCH_ENGINE=auto|gemini|vertex|local. auto uses vertex when its credentials are set,
+# otherwise Gemini when GEMINI_API_KEY is set.
 # With the gemini engine, local videos are uploaded to Google for analysis.
 GEMINI_API_KEY=
+# vertex runs Gemini through your own Google Cloud project instead of an API key:
+# the path to a service-account JSON key, and a bucket for videos that are not YouTube URLs.
+WATCH_VERTEX_CREDENTIALS=
+WATCH_VERTEX_BUCKET=
 GROQ_API_KEY=
 OPENAI_API_KEY=
 '''
@@ -146,10 +151,13 @@ def _status(detailed=False):
     _check_file_permissions(CONFIG_FILE)
     cfg = get_config()
     gemini_key = bool(load_gemini_key())
+    vertex_key = bool(cfg['vertex_credentials'])
+    if vertex_key:
+        _check_file_permissions(Path(cfg['vertex_credentials']).expanduser())
     try:
-        engine = resolve_engine(cfg['engine'], gemini_key)
+        engine = resolve_engine(cfg['engine'], gemini_key, vertex_key)
     except ConfigError:
-        engine = 'gemini'  # Explicitly chosen but the key is missing; gemini_key_present reports it.
+        engine = cfg['engine']  # Explicitly chosen but its credentials are missing; the *_present fields report it.
     binaries_required = engine == 'local'
     has_key, detected = _have_api_key()
     chosen = cfg['whisper_backend']
@@ -159,7 +167,8 @@ def _status(detailed=False):
     blocked = bool(missing) and binaries_required
     result = {'status': 'needs_install' if blocked else 'ready', 'can_proceed': not blocked,
               'engine': engine, 'configured_engine': cfg['engine'], 'gemini_key_present': gemini_key,
-              'gemini_model': cfg['gemini_model'], 'binaries_required': binaries_required,
+              'gemini_model': cfg['gemini_model'], 'vertex_credentials_present': vertex_key,
+              'vertex_bucket_present': bool(cfg['vertex_bucket']), 'binaries_required': binaries_required,
               'first_run': is_first_run(), 'setup_complete': not is_first_run(),
               'missing_binaries': missing, 'whisper_backend': backend, 'configured_backend': chosen,
               'has_api_key': has_key, 'backend_ready': backend_ready,
@@ -209,6 +218,19 @@ def cmd_install(backend=None, detail=None, engine=None):
         missing = _check_binaries()
         note = (f" Optional: install {', '.join(_brew_pkg(missing))} for non-YouTube URLs and --engine local." if missing else '')
         print(f'[setup] Gemini engine is ready. Configuration: {CONFIG_FILE}.{note}')
+        return 0
+    if engine == 'vertex':
+        cfg = get_config()
+        if not cfg['vertex_credentials']:
+            print(f'[setup] Add WATCH_VERTEX_CREDENTIALS (the path to a service-account JSON key) and WATCH_VERTEX_BUCKET '
+                  f'to {CONFIG_FILE}, then rerun --engine vertex. Google Cloud steps: '
+                  'https://github.com/bradautomates/claude-video#vertex-ai-engine', file=sys.stderr)
+            return 3
+        import vertex
+        credentials = vertex.load_credentials(cfg['vertex_credentials'], cfg['vertex_bucket'])
+        _write_setup_complete()
+        note = '' if credentials['bucket'] else ' Only YouTube URLs work until WATCH_VERTEX_BUCKET is set.'
+        print(f"[setup] Vertex AI engine is ready for project {credentials['project']}. Configuration: {CONFIG_FILE}.{note}")
         return 0
     missing = _check_binaries()
     if missing:

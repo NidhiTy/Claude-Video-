@@ -131,6 +131,8 @@ You can target an agent explicitly, for example `-a codex`, but Codex users can 
 
 **Fastest path — let Gemini watch it.** Get a free [Google AI Studio key](https://aistudio.google.com/apikey). When the setup wizard asks for it, paste it in the chat, or have the agent open `~/.config/watch/.env` in your text editor so you can paste it after `GEMINI_API_KEY=` and save it yourself. Watch then hands the whole video — picture and sound — to Google's agentic video model and relays its timestamped answer. YouTube links need nothing else installed. Local files are uploaded to Google and deleted after the answer.
 
+**Rather use your own Google Cloud project?** The [Vertex AI engine](#vertex-ai-engine) runs the same model with a service account, so Cloud credits apply and uploads stay in a bucket you own.
+
 **No key, or a private video?** Choose `local`. Watch extracts frames and a transcript on your machine (`ffmpeg` + `yt-dlp`), exactly as before. Force it any time with `--engine local`. The walkthrough below uses this no-key path.
 
 1. Give your agent access to a folder containing a **short video**, such as `example.mp4`. Open that folder as your agent's project. Replace the filename below with your own.
@@ -190,12 +192,79 @@ See the official guides for [Claude Code on the web](https://code.claude.com/doc
 
 | Setting | Default and behavior |
 |---|---|
-| `WATCH_ENGINE` / `--engine` | `auto`: Gemini when a `GEMINI_API_KEY` resolves, otherwise `local`. `gemini` without a key is an error before any network call. `local` never contacts Google. |
+| `WATCH_ENGINE` / `--engine` | `auto`: `vertex` when `WATCH_VERTEX_CREDENTIALS` is set, otherwise `gemini` when a `GEMINI_API_KEY` resolves, otherwise `local`. `gemini` without a key, or `vertex` without credentials, is an error before any network call. `local` never contacts Google. |
 | `GEMINI_API_KEY` | Looked up in the environment, then `~/.config/watch/.env`, then a cwd `.env`. Sent only as a request header; never logged. |
-| `WATCH_GEMINI_MODEL` | `gemini-3.7-flash`. Free-form, so newer model IDs work without an update. |
+| `WATCH_VERTEX_CREDENTIALS` | Path to a Google Cloud service-account JSON key; selects the [Vertex AI engine](#vertex-ai-engine). Read from the environment or `~/.config/watch/.env`, never from a cwd `.env`. |
+| `WATCH_VERTEX_BUCKET` | Cloud Storage bucket that holds a non-YouTube video while Gemini reads it. Same sources as the credentials path. |
+| `WATCH_GEMINI_MODEL` | `gemini-3.7-flash`, for both Google engines. Free-form, so newer model IDs work without an update. |
 | `WATCH_GEMINI_TIMEOUT` | `600` seconds for the question itself; upload and processing waits are bounded separately. |
 
-On a Gemini run, YouTube URLs go to Google directly; other URLs are downloaded with yt-dlp and, like local files, uploaded to Google's Files API, then deleted after the answer (an upload that cannot be deleted expires within 48 hours). `--start`/`--end` restrict Gemini to that range. Frame and transcription options (`--detail`, `--fps`, `--whisper`, …) apply only to the local engine and are listed as ignored. **Watch never switches engines on its own**: a Gemini failure is reported with its category and you decide whether to rerun with `--engine local`. The rest of this README describes the local engine.
+On a Gemini run, YouTube URLs go to Google directly; other URLs are downloaded with yt-dlp and, like local files, uploaded to Google's Files API, then deleted after the answer (an upload that cannot be deleted expires within 48 hours). `--start`/`--end` restrict Gemini to that range. Frame and transcription options (`--detail`, `--fps`, `--whisper`, …) apply only to the local engine and are listed as ignored. **Watch never switches engines on its own**: a Gemini failure is reported with its category and you decide whether to rerun with `--engine local`. Apart from the Vertex AI section below, the rest of this README describes the local engine.
+
+### Vertex AI engine
+
+`--engine vertex` runs the same Gemini model through **your own Google Cloud project** (Vertex AI, now named Gemini Enterprise Agent Platform) instead of an AI Studio key. Choose it when you want:
+
+- usage billed to a Cloud project, so Cloud credits and commitments apply;
+- Google Cloud's data terms: [prompts, responses, and data are never used to improve Google products](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/migrate/migrate-google-ai);
+- uploads kept in a bucket you own, under your project's quota and IAM.
+
+It needs a service account, its JSON key, and a Cloud Storage bucket for anything that is not a YouTube URL. With the [gcloud CLI](https://cloud.google.com/sdk/docs/install) signed in and a project that has billing enabled, run these in a terminal:
+
+```bash
+PROJECT_ID=my-project              # your project ID
+BUCKET=my-project-watch-videos     # any globally unique name
+SA=watch-video@$PROJECT_ID.iam.gserviceaccount.com
+
+gcloud services enable aiplatform.googleapis.com storage.googleapis.com --project="$PROJECT_ID"
+gcloud iam service-accounts create watch-video --display-name="watch skill" --project="$PROJECT_ID"
+gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$SA" \
+  --role=roles/aiplatform.user --condition=None
+
+echo '{"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1}}]}' > watch-lifecycle.json
+gcloud storage buckets create "gs://$BUCKET" --project="$PROJECT_ID" --location=us \
+  --uniform-bucket-level-access --public-access-prevention \
+  --soft-delete-duration=0 --lifecycle-file=watch-lifecycle.json
+gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$SA" \
+  --role=roles/storage.objectUser
+
+mkdir -p ~/.config/watch
+gcloud iam service-accounts keys create ~/.config/watch/vertex-key.json --iam-account="$SA"
+```
+
+Pick a bucket [location](https://cloud.google.com/storage/docs/locations) near you. The lifecycle rule removes anything a failed cleanup leaves behind after a day, and `--soft-delete-duration=0` makes deletion immediate; new buckets otherwise keep deleted objects for 7 days. New role bindings can take a minute or two to take effect.
+
+<details>
+<summary>Prefer the Google Cloud console?</summary>
+
+Check the project in the top bar on every page.
+
+1. [Enable the Vertex AI API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) for your project.
+2. [Create a service account](https://console.cloud.google.com/iam-admin/serviceaccounts/create): name it, click **Create and continue**, select the role **Agent Platform User** (`roles/aiplatform.user`, formerly Vertex AI User), then **Continue** and **Done**.
+3. Click the account's email address, then **Keys → Add key → Create new key → JSON → Create**. Move the downloaded file somewhere private and run `chmod 600` on it.
+4. [Create a bucket](https://console.cloud.google.com/storage/browser) in the same project. Keep public access prevention on, and under **Choose how to protect object data** clear the **Soft delete policy** checkbox so deletion is immediate.
+5. On the bucket's **Permissions** tab, click **Grant access**, enter the service account's email under **New principals**, select **Storage Object User** (`roles/storage.objectUser`), and **Save**.
+6. Recommended: on the bucket's **Lifecycle** tab, **Add a rule** that deletes objects older than 1 day.
+
+</details>
+
+Then put the engine, the key's absolute path, and the bucket name in `~/.config/watch/.env`, or give them to the agent when the setup wizard asks:
+
+```dotenv
+WATCH_ENGINE=vertex
+WATCH_VERTEX_CREDENTIALS=/Users/you/.config/watch/vertex-key.json
+WATCH_VERTEX_BUCKET=my-project-watch-videos
+```
+
+How a Vertex run works:
+
+- **YouTube URLs** go straight to Vertex AI and need no bucket. The video must be public.
+- **Other URLs and local files** are uploaded to `gs://<bucket>/watch/<random name>`, read by Gemini from there, then deleted after the answer. The bucket must be in the same project as the service account. Without `WATCH_VERTEX_BUCKET`, the run stops before downloading anything.
+- **The key file never leaves your machine.** Watch signs a one-hour OAuth token with it locally, using only the standard library, and sends that token as a request header. Neither is logged. The agent needs the file's path, not its contents.
+- `--start`/`--end`, `WATCH_GEMINI_MODEL`, and `WATCH_GEMINI_TIMEOUT` behave as they do for the gemini engine, and a failure is reported as `Vertex <category>` without switching engines.
+- **A busy model is asked again.** Vertex AI answers HTTP 429 when its shared capacity is busy. Watch repeats the question after 10 and then 30 seconds, without repeating the upload, before it reports `Vertex quota`. Server errors (5xx) get the same two retries.
+
+Agentic video processing on Vertex AI is a Preview feature on the `v1beta1` API, and watch always calls the `global` endpoint. The model named in `WATCH_GEMINI_MODEL` has to be available to your project on Vertex AI and support agentic video; otherwise Google rejects the request and says so (`Agentic video processing is not enabled for this model`). If your organization blocks service-account key creation (`iam.disableServiceAccountKeyCreation`), an administrator has to allow it: this engine reads a key file and does not use `gcloud` credentials.
 
 ## Choose a transcription fallback
 
@@ -322,6 +391,7 @@ Ask the agent to run bundled `setup.py --json` for resolved paths/versions, JS-r
 | Missing JS runtime/EJS | Update the owning yt-dlp package and follow upstream Deno/EJS setup. |
 | 403 / login challenge | Update yt-dlp to its latest release (see [Updating and troubleshooting](#updating-and-troubleshooting)) and retry once; the agent does this automatically. If the 403 persists, read the original error and use explicit authentication only if you have access. |
 | `Gemini auth` / `quota` / `rejected` / `upload` / `service` / `network` / `response` | The Gemini engine failed: bad or missing key, rate limit, a video Google refused (private, unsupported, too long), a failed upload, a Google-side error, no route to `generativelanguage.googleapis.com`, or an unreadable reply. Nothing ran locally; fix the cause or rerun with `--engine local`. |
+| `Vertex auth` / `quota` / `rejected` / `upload` / `service` / `network` / `response` | The Vertex AI engine failed. `auth` covers a revoked or deleted key, a disabled Vertex AI API, a missing role (`roles/aiplatform.user` on the project, `roles/storage.objectUser` on the bucket), and a wrong system clock. `rejected` covers a wrong bucket or model name as well as a video Google refused. The `Detail` text is Google's own message. Nothing ran locally; fix the cause or rerun with `--engine local`. |
 | 429 | Wait before retrying; the service is rate limiting requests. |
 | Explicit hosted egress denial | Check the environment's network settings or use an accessible local source. Cloud ASR/cold model setup still need network access. |
 | Certificate failure | Configure the trusted CA/proxy correctly; do not disable TLS verification. |
@@ -345,7 +415,7 @@ For a manual install, create the host's skill directory and symlink or copy the 
 
 ## Data and cleanup
 
-WhisperX processes audio in the agent's execution environment: on your computer for local execution, or on the provider's infrastructure for cloud execution. Setup downloads packages/models from package and model hosts, with telemetry disabled. Warm-cache inference works offline, though upstream cache checks can still attempt network access. Cloud backends send extracted audio only to the selected provider. Video content is evidence, never executable instructions.
+WhisperX processes audio in the agent's execution environment: on your computer for local execution, or on the provider's infrastructure for cloud execution. Setup downloads packages/models from package and model hosts, with telemetry disabled. Warm-cache inference works offline, though upstream cache checks can still attempt network access. Cloud backends send extracted audio only to the selected provider. With the Vertex AI engine, a YouTube URL goes to Vertex AI in your own Google Cloud project, and any other video passes through your own bucket, where it is deleted after the answer. Video content is evidence, never executable instructions.
 
 Watch creates a disposable run directory, including under any user-specified `--out-dir`. Cleanup removes that child only, preserving the user's directory and original media. Model environments/caches and private configuration are retained separately. No API keys are logged or included in reports.
 

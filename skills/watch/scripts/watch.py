@@ -19,6 +19,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import ConfigError, frame_cap, get_config, load_gemini_key, resolve_engine  # noqa: E402
 import gemini  # noqa: E402
+import vertex  # noqa: E402
 from download import download, fetch_captions, is_url, auth_args  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, validate_controls  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
@@ -30,8 +31,12 @@ LOCAL_ONLY_FLAGS = (("--detail", "detail"), ("--fps", "fps"), ("--max-frames", "
                     ("--timestamps", "timestamps"), ("--whisper", "whisper"), ("--sub-lang", "sub_lang"))
 
 
-def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
-    """Google watches the video. No captions, frames, or Whisper; no fallback on failure."""
+def run_gemini(args, config, key, start_sec, end_sec, auth, api=gemini) -> int:
+    """Google watches the video. No captions, frames, or Whisper; no fallback on failure.
+
+    `api` is the gemini module (API key) or the vertex module (service account); both expose
+    ask, upload_file, and delete_file.
+    """
     ignored = [flag for flag, name in LOCAL_ONLY_FLAGS if getattr(args, name) is not None]
     ignored += [flag for flag, on in (("--no-whisper", args.no_whisper), ("--no-dedup", args.no_dedup)) if on]
     clip = (start_sec, end_sec) if start_sec is not None or end_sec is not None else None
@@ -48,18 +53,18 @@ def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
             print("[watch] downloading media…" if is_url(args.source) else "[watch] using local file…", file=sys.stderr)
             media = download(args.source, work / "download", **(auth if is_url(args.source) else {}))
             sent = "upload to Google failed"
-            print("[watch] uploading to the Gemini Files API…", file=sys.stderr)
-            uploaded = gemini.upload_file(Path(media["video_path"]), key)
+            print(f"[watch] uploading to {'Cloud Storage' if api is vertex else 'the Gemini Files API'}…", file=sys.stderr)
+            uploaded = api.upload_file(Path(media["video_path"]), key)
             video = {"uri": uploaded["uri"], "mime_type": uploaded["mime_type"]}
-            sent = "video uploaded to Google, deleted after the answer"
+            sent = uploaded.get("sent", "video uploaded to Google, deleted after the answer")
         print(f"[watch] asking {config['gemini_model']}…", file=sys.stderr)
-        result = gemini.ask(video, args.question, model=config["gemini_model"], key=key,
-                            clip=clip, timeout=config["gemini_timeout"])
+        result = api.ask(video, args.question, model=config["gemini_model"], key=key,
+                         clip=clip, timeout=config["gemini_timeout"])
     except SystemExit as exc:
         error = str(exc)
     finally:
         if uploaded:
-            warning = gemini.delete_file(uploaded["name"], key)
+            warning = api.delete_file(uploaded["name"], key)
         if work:  # Run-owned; holds at most a downloaded copy. A local source file lives elsewhere.
             shutil.rmtree(work, ignore_errors=True)
 
@@ -139,11 +144,13 @@ def main() -> int:
     cookies = ap.add_mutually_exclusive_group()
     cookies.add_argument("--cookies", default=None, help="Explicit cookie file (yt-dlp may update this jar)")
     cookies.add_argument("--cookies-from-browser", default=None, help="Explicit yt-dlp browser selector")
-    ap.add_argument("--engine", choices=["auto", "gemini", "local"], default=None,
+    ap.add_argument("--engine", choices=["auto", "gemini", "vertex", "local"], default=None,
                     help="gemini: Google watches the video and answers (needs GEMINI_API_KEY). "
-                         "local: frames + transcript on this machine. Default auto: gemini when a key exists.")
+                         "vertex: the same through your Google Cloud project (needs WATCH_VERTEX_CREDENTIALS). "
+                         "local: frames + transcript on this machine. "
+                         "Default auto: vertex, then gemini, when configured.")
     ap.add_argument("--question", default=None,
-                    help="The user's question. Sent to Gemini on a gemini run; unused by the local engine.")
+                    help="The user's question. Sent to Gemini on a gemini or vertex run; unused by the local engine.")
     args = ap.parse_args()
     if args.no_whisper and args.whisper:
         ap.error("--no-whisper conflicts with --whisper")
@@ -162,7 +169,14 @@ def main() -> int:
     auth = {"cookies_file": cookies_file, "cookies_from_browser": cookies_browser}
 
     gemini_key = load_gemini_key()
-    if resolve_engine(args.engine or config["engine"], bool(gemini_key)) == "gemini":
+    engine = resolve_engine(args.engine or config["engine"], bool(gemini_key), bool(config["vertex_credentials"]))
+    if engine == "vertex":
+        credentials = vertex.load_credentials(config["vertex_credentials"], config["vertex_bucket"])
+        if not credentials["bucket"] and not gemini.is_youtube(args.source):  # Fail before any download.
+            raise ConfigError("The vertex engine uploads videos other than YouTube URLs to Cloud Storage first. "
+                              f"Set WATCH_VERTEX_BUCKET in {config['config_file']}, or rerun with --engine local.")
+        return run_gemini(args, config, credentials, start_sec, end_sec, auth, api=vertex)
+    if engine == "gemini":
         return run_gemini(args, config, gemini_key, start_sec, end_sec, auth)
 
     parent = Path(args.out_dir).expanduser().resolve() if args.out_dir else None

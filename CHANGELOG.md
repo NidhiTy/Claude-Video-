@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **Vertex AI engine.** `--engine vertex` (or `WATCH_ENGINE=vertex`) runs the same agentic Gemini video model through the user's own Google Cloud project, so Cloud billing, credits, quota, and data terms apply. A service-account JSON key (`WATCH_VERTEX_CREDENTIALS`) signs a one-hour OAuth token locally; YouTube URLs go to Vertex AI directly and everything else passes through the user's Cloud Storage bucket (`WATCH_VERTEX_BUCKET`), deleted after the answer. `auto` prefers Vertex when its credentials are set. A busy (HTTP 429) or failing (5xx) model is asked again after 10 and 30 seconds without repeating the upload. Standard library only, including the RS256 token signature; no silent fallback between engines. `setup.py --engine vertex` and `--json` report readiness without reading the key into any output.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed
