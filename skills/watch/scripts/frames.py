@@ -28,6 +28,12 @@ SCENE_THRESHOLD = 0.20
 # this is a low floor — NOT the frame budget — so normal videos with cuts use
 # the (single-pass) scene engine instead of paying for a wasted second decode.
 SCENE_MIN_FRAMES = 8
+# ponytail: clearing SCENE_MIN_FRAMES is not the same as covering the range. A
+# 10-minute stretch of a film returned 23 scene candidates — enough to pass the
+# floor — with 15 of them inside seven seconds and a 3.5-minute hole in the middle,
+# so the frames "spanned" the range while showing none of it. Count can't see a
+# hole; measure the worst one against the spacing the frame budget implies.
+MAX_GAP_RATIO = 4.0
 # Below this many decoded keyframes a clip is too sparse for keyframe coverage
 # (very short or oddly encoded), so the cheap tier falls back to uniform.
 KEYFRAME_MIN = 4
@@ -514,6 +520,29 @@ def _dedupe_by_deltas(
     return kept, len(dropped)
 
 
+def _worst_gap(times: list[float], start: float, end: float) -> float:
+    """Longest stretch of ``start``-``end`` containing no candidate, edges included."""
+    if end <= start:
+        return 0.0
+    marks = [start, *sorted(times), end]
+    return max(b - a for a, b in zip(marks, marks[1:]))
+
+
+def _covers_range(times: list[float], start: float, end: float) -> bool:
+    """True when the candidates are spread across the range rather than bunched.
+
+    The test is clustering, not density: whatever the engine found, spacing it evenly
+    would put a candidate every ``span / (n + 1)`` seconds, and a hole more than
+    ``MAX_GAP_RATIO`` times that means the frames skip a stretch of the video. Judging
+    against the frame *budget* instead would demand scene detection return as many
+    cuts as the cap, which is just a slower way of never using the scene engine.
+    """
+    if not times or end <= start:
+        return True
+    ideal = (end - start) / (len(times) + 1)
+    return _worst_gap(times, start, end) <= ideal * MAX_GAP_RATIO
+
+
 def extract_scene_or_uniform(
     video_path: str,
     out_dir: Path,
@@ -525,8 +554,9 @@ def extract_scene_or_uniform(
     end_seconds: float | None = None,
     dedup: bool = True,
 ) -> tuple[list[dict], dict]:
-    """Prefer scene selection, falling back to uniform only when the video is
-    effectively static (fewer than ``SCENE_MIN_FRAMES`` detected shots).
+    """Prefer scene selection, falling back to uniform when the video is
+    effectively static (fewer than ``SCENE_MIN_FRAMES`` detected shots) or when
+    the detected shots bunch up and leave a stretch uncovered (:func:`_covers_range`).
 
     Scene cuts are detected across the *whole* range (uncapped), near-identical
     frames are dropped (:func:`dedupe_perceptual`, unless ``dedup`` is False),
@@ -546,7 +576,12 @@ def extract_scene_or_uniform(
         end_seconds=end_seconds,
     )
     scene_count = len(scene_frames)
-    if scene_count >= SCENE_MIN_FRAMES:
+    eff_start = start_seconds or 0.0
+    # Clamp to the real duration: an --end past the last frame is not a hole in coverage.
+    duration = get_metadata(video_path)["duration_seconds"]
+    eff_end = duration if end_seconds is None else min(end_seconds, duration)
+    covered = _covers_range([fr["timestamp_seconds"] for fr in scene_frames], eff_start, eff_end)
+    if scene_count >= SCENE_MIN_FRAMES and covered:
         deduped, n_dropped = dedupe_perceptual(scene_frames) if dedup else (scene_frames, 0)
         cap = len(deduped) if max_frames is None else max_frames
         selected = _even_sample(deduped, cap)
@@ -578,6 +613,7 @@ def extract_scene_or_uniform(
         "deduped_count": n_dropped,
         "selected_count": len(frames),
         "fallback": True,
+        "fallback_reason": "sparse" if scene_count < SCENE_MIN_FRAMES else "coverage",
     }
 
 
