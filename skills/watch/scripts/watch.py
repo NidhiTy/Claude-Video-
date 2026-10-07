@@ -422,9 +422,21 @@ def main() -> int:
     return 1 if errors and not frames and not transcript_segments and not track_available else 0
 
 
+def _entry() -> int:
+    """Run main(), or let an optional sibling `watch_extension.py` wrap it (extra subcommands,
+    report sections) so site-local additions never require patching this file."""
+    try:
+        import watch_extension  # noqa: PLC0415
+    except ModuleNotFoundError as exc:
+        if exc.name != "watch_extension":
+            raise
+        return main()
+    return watch_extension.run(sys.modules[__name__])
+
+
 if __name__ == "__main__":
     configure_stdio()
     try:
-        raise SystemExit(main())
+        raise SystemExit(_entry())
     except (ConfigError, OSError) as exc:
         raise SystemExit(str(exc)) from None
