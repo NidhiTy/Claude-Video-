@@ -21,9 +21,10 @@ permissions:
   contents: read
 
 env:
-  # Big Buck Bunny (CC-BY), Wikimedia Commons' 240p transcode, ~29 MB. Only the
-  # first 30 s are processed.
-  VIDEO: https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.240p.vp9.webm
+  # Popeye for President (1956, public domain) from the Internet Archive, 512kb
+  # transcode, ~26 MB. Only the first 30 s are processed. (Wikimedia Commons
+  # was tried first and answers yt-dlp's default user agent with 403.)
+  VIDEO: https://archive.org/download/Popeye_forPresident/Popeye_forPresident_512kb.mp4
 
 jobs:
   smoke:
@@ -91,7 +92,7 @@ jobs:
               tail -n 40 "$f"
               echo '```'; echo "</details>"; echo
             done
-            echo "A fresh yt-dlp or a YouTube change usually explains this; see the 403/player-client handling in \`download.py\`. Closes itself when a run passes."
+            echo "A new yt-dlp or ffmpeg release, or the source host changing, usually explains this. Closes itself when a run passes."
           } > body.md
           gh label create smoke-test --description "Weekly network smoke test failing" --color d93f0b --force >/dev/null
           if [ -n "$existing" ]; then
