@@ -170,6 +170,8 @@ Weekly triage of items first seen after 2026-09-21 and not already covered above
 | [#251](https://github.com/bradautomates/claude-video/pull/251) | @sam3012 | feat: Vertex AI engine (service account + Cloud Storage) | **n/a** | builds on upstream's Gemini engine, which this fork does not carry (see #17 on sync policy) |
 | [#247](https://github.com/bradautomates/claude-video/issues/247) | @elevyr | Dubbed YouTube videos get another language's captions: select_caption picks the first -orig track alphabetically (bn-orig) | **n/a** | not reproducible here: the fork never fetches foreign `-orig` tracks when the language is known; residual edge in the unknown-language fallback (first `-orig` of `automatic_captions`) — prefer the track matching `info['language']`, low priority |
 | [#250](https://github.com/bradautomates/claude-video/issues/250) | @efthimispegas | Gemini engine: repeated HTTP 503 on local videos; no bounded retry after upload | **n/a** | Gemini engine is not in this fork (the Whisper HTTP path already retries 429/5xx with backoff) |
+| [`de8b5b5`](https://github.com/bradautomates/claude-video/commit/de8b5b5) | @bradautomates | test: read SKILL.md as UTF-8 and write VTT fixtures as bytes on Windows | **adapted** | VTT fixture helper in `test_transcribe.py` writes exact bytes (text mode turns `\r\n` into `\r\r\n` on Windows); the UTF-8 `SKILL.md` read was already in `test_packaging.py` |
+| [`19b517f`](https://github.com/bradautomates/claude-video/commit/19b517f) | @bradautomates | test: tolerate FFmpeg 7.1 muxing the shifted-PTS fixture one frame short | **n/a** | the fork's `test_frames.py` has no shifted-PTS fixture, so there is nothing to loosen |
 
 ## Keeping this current
 

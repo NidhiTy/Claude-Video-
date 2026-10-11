@@ -51,7 +51,8 @@ jumps over the lazy dog
 
 def _write(tmp_path: Path, name: str, body: str) -> str:
     path = tmp_path / name
-    path.write_text(body, encoding="utf-8")
+    # Exact bytes: text mode on Windows would turn \r\n into \r\r\n.
+    path.write_bytes(body.encode("utf-8"))
     return str(path)
 
 
