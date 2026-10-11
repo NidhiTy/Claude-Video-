@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import transcribe
 import whisper
 
 
@@ -294,3 +295,77 @@ class TestChunkConcurrency:
             "[watch] chunk 2/3 failed — skipping (chunk 1 failed)\n"
             "[watch] chunk 3/3 \u2192 1 segments\n"
         )
+
+
+class TestAssessSpeech:
+    """The hallucination flag, and what it can and cannot see per backend.
+
+    The cloud backends return verbose_json, which carries `no_speech_prob`. The
+    on-device backends (`--whisper parakeet`, `--whisper cli`) parse a .vtt and
+    carry nothing, so the transcript comes back unassessed rather than clean.
+    """
+
+    @staticmethod
+    def _segments(count: int, text=lambda i: f"line {i}", **extra) -> list[dict]:
+        return [
+            {"start": i * 5.0, "end": i * 5.0 + 5.0, "text": text(i), **extra}
+            for i in range(count)
+        ]
+
+    def test_high_no_speech_prob_is_suspect(self):
+        result = whisper.assess_speech(self._segments(10, no_speech_prob=0.82))
+
+        assert result["suspect"] is True
+        assert result["assessed"] is True
+        assert "no_speech_prob" in result["reason"]
+
+    def test_low_no_speech_prob_is_clean_and_assessed(self):
+        result = whisper.assess_speech(self._segments(10, no_speech_prob=0.01))
+
+        assert result == {"suspect": False, "assessed": True, "reason": None}
+
+    def test_segments_without_probabilities_are_unassessed_not_clean(self):
+        """The CLI backends strip no_speech_prob. That is not a clean bill of health."""
+        result = whisper.assess_speech(self._segments(10))
+
+        assert result["suspect"] is False
+        assert result["assessed"] is False
+        assert result["reason"] == whisper.UNASSESSED_REASON
+
+    def test_repeated_phrase_is_suspect_without_probabilities(self):
+        """The one hallucination shape the CLI path can still catch on its own."""
+        result = whisper.assess_speech(
+            self._segments(10, text=lambda i: "Thanks for watching!" if i % 2 else f"line {i}")
+        )
+
+        assert result["suspect"] is True
+        assert result["assessed"] is True
+
+    def test_empty_transcript_is_not_flagged(self):
+        assert whisper.assess_speech([]) == {"suspect": False, "assessed": True, "reason": None}
+
+
+class TestAssessSpeechOnParsedVtt:
+    """End of the real CLI path: parse_vtt output fed to assess_speech."""
+
+    def test_loop_collapsed_by_dedupe_is_reported_unassessed(self, tmp_path):
+        """A back-to-back hallucination loop survives as one segment.
+
+        transcribe._dedupe folds consecutive identical cues into a single
+        segment and extends its end time, so the repeat detector sees a count of
+        1 and cannot fire. Without per-segment probabilities there is no second
+        signal, which is exactly why this must not read as a clean transcript.
+        """
+        cues = "\n".join(
+            f"00:00:{i * 5:02d}.000 --> 00:00:{i * 5 + 5:02d}.000\nThanks for watching!\n"
+            for i in range(10)
+        )
+        vtt = tmp_path / "loop.vtt"
+        vtt.write_text("WEBVTT\n\n" + cues, encoding="utf-8")
+
+        segments = transcribe.parse_vtt(str(vtt))
+        assert len(segments) == 1  # documents the dedupe that hides the loop
+
+        result = whisper.assess_speech(segments)
+        assert result["suspect"] is False
+        assert result["assessed"] is False

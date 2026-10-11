@@ -469,15 +469,28 @@ NO_SPEECH_SEGMENT_FRACTION = 0.5
 REPEAT_RUN_THRESHOLD = 3
 
 
+# The on-device backends parse a .vtt/.srt, which carries no per-segment
+# confidence at all (see _transcribe_via_cli). "No probabilities" is therefore
+# not the same answer as "probabilities, and they look fine": the first means
+# the check below could not run.
+UNASSESSED_REASON = (
+    "this backend reports no per-segment confidence, so only phrase repetition was checked"
+)
+
+
 def assess_speech(segments: list[dict]) -> dict:
     """Judge whether a Whisper transcript is likely hallucinated.
 
-    Returns {"suspect": bool, "reason": str|None}. Deliberately advisory: the
-    caller labels the transcript rather than discarding it, since a false
-    positive on a quiet-but-real recording would be worse than a warning.
+    Returns {"suspect": bool, "assessed": bool, "reason": str|None}. Deliberately
+    advisory: the caller labels the transcript rather than discarding it, since a
+    false positive on a quiet-but-real recording would be worse than a warning.
+
+    ``assessed`` is False when the segments carry no ``no_speech_prob`` — the
+    transcript is then unchecked, not clean, and the caller must not present it
+    as verified.
     """
     if not segments:
-        return {"suspect": False, "reason": None}
+        return {"suspect": False, "assessed": True, "reason": None}
 
     probs = [s["no_speech_prob"] for s in segments if "no_speech_prob" in s]
     if probs:
@@ -486,14 +499,18 @@ def assess_speech(segments: list[dict]) -> dict:
         if fraction > NO_SPEECH_SEGMENT_FRACTION:
             return {
                 "suspect": True,
+                "assessed": True,
                 "reason": (
                     f"{fraction:.0%} of segments scored no_speech_prob > "
                     f"{NO_SPEECH_PROB_THRESHOLD}"
                 ),
             }
 
-    # A hallucination loop repeats one phrase at regular intervals. This shows
-    # up even when per-segment probabilities are unavailable.
+    # A hallucination loop repeats one phrase at regular intervals. This shows up
+    # even when per-segment probabilities are unavailable — but only when the
+    # repeats are interleaved with other text. parse_vtt's _dedupe collapses
+    # consecutive identical cues into one segment, so a back-to-back loop from a
+    # CLI backend arrives here as a single segment and slips past.
     texts = [(s.get("text") or "").strip().lower() for s in segments]
     texts = [t for t in texts if t]
     if len(texts) >= REPEAT_RUN_THRESHOLD:
@@ -502,10 +519,14 @@ def assess_speech(segments: list[dict]) -> dict:
         if count >= REPEAT_RUN_THRESHOLD and count / len(texts) > 0.3:
             return {
                 "suspect": True,
+                "assessed": True,
                 "reason": f"one phrase repeats {count}x of {len(texts)} segments",
             }
 
-    return {"suspect": False, "reason": None}
+    if not probs:
+        return {"suspect": False, "assessed": False, "reason": UNASSESSED_REASON}
+
+    return {"suspect": False, "assessed": True, "reason": None}
 
 
 def transcribe_chunks(

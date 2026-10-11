@@ -486,7 +486,14 @@ def main() -> int:
             if (transcript_source or "").startswith("whisper")
             else {"suspect": False, "reason": None}
         )
-        suspect_note = " -- LOW CONFIDENCE" if speech["suspect"] else ""
+        # Captions skip the check entirely and carry no "assessed" key; they are
+        # not Whisper output, so there is nothing to warn about.
+        if speech["suspect"]:
+            suspect_note = " -- LOW CONFIDENCE"
+        elif not speech.get("assessed", True):
+            suspect_note = " -- UNASSESSED"
+        else:
+            suspect_note = ""
         print(
             f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
             f"(via {transcript_source or 'captions'}){suspect_note}"
@@ -578,6 +585,15 @@ def main() -> int:
                 "Whisper fabricates dialogue when given music or silence, so this "
                 "video may have no speech at all. Judge it against the frames "
                 "before quoting any of it."
+            )
+        elif not speech.get("assessed", True):
+            print()
+            print(
+                f"> **This transcript was not checked for hallucination** ({speech['reason']}). "
+                "Whisper fabricates dialogue when given music or silence, and the "
+                "usual signal for that is missing here — absence of a warning is not "
+                "evidence the speech is real. If the video may be silent or "
+                "music-only, judge the transcript against the frames."
             )
         print()
         print("```")
