@@ -7,8 +7,9 @@ name: Network smoke test
 # Never part of a PR check: a YouTube outage must not block unrelated work.
 
 on:
-  schedule:
-    - cron: "41 6 * * 2"
+  # schedule paused: YouTube bot-gates GitHub-hosted runner IPs (see #15)
+  # schedule:
+  #   - cron: "41 6 * * 2"
   workflow_dispatch:
 
 permissions:
