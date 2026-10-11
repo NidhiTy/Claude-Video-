@@ -154,6 +154,23 @@ Everything taken is offered back upstream in [bradautomates/claude-video#237](ht
 | [#54](https://github.com/bradautomates/claude-video/issues/54) | @Artemonim | AskVLM | **info** | pointer to AskVLM — no action |
 | [#98](https://github.com/bradautomates/claude-video/issues/98) | @ekaterinakozina3-commits | Мои | **invalid** | empty issue body |
 
+## Since the fork
+
+Weekly triage of items first seen after 2026-09-21 and not already covered above (tracking issues [#7](https://github.com/frinsen/claude-video/issues/7), [#32](https://github.com/frinsen/claude-video/issues/32), [#33](https://github.com/frinsen/claude-video/issues/33)). Upstream `main` is 22 commits ahead of this fork (0.3.1/0.3.2, Gemini engine, WhisperX); see [#17](https://github.com/frinsen/claude-video/issues/17).
+
+| Item | Author | Title | Status | Landed as / reason |
+|---|---|---|---|---|
+| [#239](https://github.com/bradautomates/claude-video/pull/239) | @wooay123-cloud | Fix Windows: ffmpeg 9.x -vsync removal and non-ASCII path decoding | **duplicate** | `-vsync` → #219's probe; explicit UTF-8 decoding at every subprocess call site landed in 0.3.0 (#108) |
+| [#242](https://github.com/bradautomates/claude-video/pull/242) | @yangjilife | Fix ffmpeg 8+ frame extraction, Windows encoding crash, and caption entities | **duplicate** | `-vsync` → #219, console encoding → #192; caption HTML entities already handled by `html.unescape` in `transcribe.py` |
+| [#243](https://github.com/bradautomates/claude-video/pull/243) | @jamesclintonwhite-dot | Fix frame extraction on ffmpeg 8+ and a false Windows permissions warning | **duplicate** | closed upstream; `-vsync` → #219, permissions → #206 |
+| [#92](https://github.com/bradautomates/claude-video/pull/92) | (closed) | Fetch the original caption track, not an English translation of it | **duplicate** | closed upstream; native-language captions landed via #212/#221/#234/#187 |
+| [#45](https://github.com/bradautomates/claude-video/pull/45) | (open) | fix: secrets-file permission check on native Windows (NTFS) | **duplicate** | Windows permission check; #206 taken |
+| [#248](https://github.com/bradautomates/claude-video/pull/248) | @tonyisup | fix: pick the declared language's -orig track on dubbed YouTube videos (#247) | **n/a** | fork's picker ranks by the video's declared language and the first pass fetches only `en.*`, so a foreign `-orig` track is never chosen; one residual edge (no English captions *and* unknown language, `_resolve_subtitle` fallback takes the first `-orig` in dict order) is noted under #247 |
+| [#249](https://github.com/bradautomates/claude-video/pull/249) | @tonyisup | feat: local Parakeet transcription backend for Apple Silicon | **duplicate** | fork already ships `--whisper parakeet` (parakeet-mlx, Parakeet TDT 0.6B v3) via the CLI backend in `whisper.py`; upstream's managed-venv installer (`setup.py --backend parakeet`) not taken |
+| [#251](https://github.com/bradautomates/claude-video/pull/251) | @sam3012 | feat: Vertex AI engine (service account + Cloud Storage) | **n/a** | builds on upstream's Gemini engine, which this fork does not carry (see #17 on sync policy) |
+| [#247](https://github.com/bradautomates/claude-video/issues/247) | @elevyr | Dubbed YouTube videos get another language's captions: select_caption picks the first -orig track alphabetically (bn-orig) | **n/a** | not reproducible here: the fork never fetches foreign `-orig` tracks when the language is known; residual edge in the unknown-language fallback (first `-orig` of `automatic_captions`) — prefer the track matching `info['language']`, low priority |
+| [#250](https://github.com/bradautomates/claude-video/issues/250) | @efthimispegas | Gemini engine: repeated HTTP 503 on local videos; no bounded retry after upload | **n/a** | Gemini engine is not in this fork (the Whisper HTTP path already retries 429/5xx with backoff) |
+
 ## Keeping this current
 
 `.github/workflows/upstream-watch.yml` runs weekly, lists upstream PRs, issues and commits with activity in the past 8 days, and opens a tracking issue here. Triaged items get a row above.
