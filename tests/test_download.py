@@ -23,6 +23,15 @@ def test_original_track_overrides_dubbed_metadata(language):
     assert download.select_caption(info)['key'] == f'{language}-orig'
 
 
+@pytest.mark.parametrize(('metadata', 'expected'), [('en-US', 'en-orig'), ('ko', 'ko-orig'), (None, 'en-orig')])
+def test_auto_dubbed_video_picks_original_matching_metadata(metadata, expected):
+    # Auto-dubbed videos expose one -orig ASR track per audio language (cWjS56edaUA lists 20+).
+    info = {'extractor_key': 'Youtube', 'language': metadata,
+            'automatic_captions': _tracks('ar-orig', 'bn-orig', 'en-orig', 'ko-orig', 'zu-orig', 'en', 'ar')}
+    track = download.select_caption(info)
+    assert (track['key'], track['kind'], track['provenance']) == (expected, 'automatic', 'unknown')
+
+
 def test_unknown_language_prefers_english():
     # "Me at the zoo" reports no language and has manual de + en tracks.
     picked = download.select_caption({'extractor_key': 'Youtube', 'subtitles': _tracks('de', 'en')})

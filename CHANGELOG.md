@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Auto caption selection on auto-dubbed YouTube videos, which list one `-orig` track per audio language, now picks the original track that matches the video's language (English first when unknown) instead of the alphabetically first one, which returned an Arabic transcript for an English video.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed
