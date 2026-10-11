@@ -1,15 +1,19 @@
 name: Network smoke test
 
-# The Tests workflow is fully offline. yt-dlp and YouTube change on their own
-# schedule, so once a week run the real pipeline against one stable public video
-# (a transcript-only pass and a frames pass) with the newest yt-dlp. A failure
-# opens (or comments on) one tracking issue; the next green run closes it.
-# Never part of a PR check: a YouTube outage must not block unrelated work.
+# The Tests workflow is fully offline. yt-dlp and ffmpeg change on their own
+# schedule, so once a week run the real download -> frames pipeline against one
+# stable public file with the newest yt-dlp (keyframe pass and scene-detect pass).
+# A failure opens (or comments on) one tracking issue; the next green run closes it.
+# Never part of a PR check: an outage must not block unrelated work.
+#
+# Deliberately not YouTube: YouTube answers GitHub-hosted runner IPs with
+# "Sign in to confirm you're not a bot" on every player client, so a YouTube
+# job could only ever fail. The YouTube-specific paths (captions, client
+# fallbacks) stay covered by the offline suite.
 
 on:
-  # schedule paused: YouTube bot-gates GitHub-hosted runner IPs (see #15)
-  # schedule:
-  #   - cron: "41 6 * * 2"
+  schedule:
+    - cron: "41 6 * * 2"
   workflow_dispatch:
 
 permissions:
@@ -17,8 +21,9 @@ permissions:
   contents: read
 
 env:
-  # "Me at the zoo": 19 s, the first YouTube upload, human captions, never going away.
-  VIDEO: https://www.youtube.com/watch?v=jNQXAC9IVRw
+  # Big Buck Bunny (CC-BY), Wikimedia Commons' 240p transcode, ~29 MB. Only the
+  # first 30 s are processed.
+  VIDEO: https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.240p.vp9.webm
 
 jobs:
   smoke:
@@ -38,35 +43,36 @@ jobs:
           yt-dlp --version
           ffmpeg -version | head -1
 
-      - name: Transcript (captions, no Whisper)
-        id: transcript
-        run: |
-          set -o pipefail
-          python skills/watch/scripts/watch.py "$VIDEO" --detail transcript --no-whisper \
-            --out-dir "$RUNNER_TEMP/t" 2> transcript.err | tee transcript.md
-          grep -Eq '\*\*Transcript:\*\* [1-9][0-9]* segments' transcript.md
-
-      - name: Frames (efficient)
-        id: frames
-        if: ${{ !cancelled() }}
+      - name: Keyframe pass (efficient)
+        id: keyframes
         run: |
           set -o pipefail
           python skills/watch/scripts/watch.py "$VIDEO" --detail efficient --no-whisper \
-            --out-dir "$RUNNER_TEMP/f" 2> frames.err | tee frames.md
-          test "$(find "$RUNNER_TEMP/f/frames" -name '*.jpg' | wc -l)" -gt 0
-          grep -Eq '\*\*Frames:\*\* [1-9][0-9]* selected' frames.md
+            --start 0 --end 30 --out-dir "$RUNNER_TEMP/k" 2> keyframes.err | tee keyframes.md
+          test "$(find "$RUNNER_TEMP/k/frames" -name '*.jpg' | wc -l)" -gt 0
+          grep -Eq '\*\*Frames:\*\* [1-9][0-9]* selected' keyframes.md
+
+      - name: Scene-detect pass (balanced)
+        id: scenes
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          python skills/watch/scripts/watch.py "$VIDEO" --detail balanced --no-whisper \
+            --start 0 --end 30 --out-dir "$RUNNER_TEMP/s" 2> scenes.err | tee scenes.md
+          test "$(find "$RUNNER_TEMP/s/frames" -name '*.jpg' | wc -l)" -gt 0
+          grep -Eq '\*\*Frames:\*\* [1-9][0-9]* selected' scenes.md
 
       - name: Report
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
-          T: ${{ steps.transcript.outcome }}
-          F: ${{ steps.frames.outcome }}
+          K: ${{ steps.keyframes.outcome }}
+          S: ${{ steps.scenes.outcome }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           existing=$(gh issue list --label smoke-test --state open --json number --jq '.[0].number // empty')
-          if [ "$T" = success ] && [ "$F" = success ]; then
+          if [ "$K" = success ] && [ "$S" = success ]; then
             if [ -n "$existing" ]; then
               gh issue close "$existing" --comment "Smoke test green again: $RUN"
             fi
@@ -75,11 +81,11 @@ jobs:
           {
             echo "Weekly network smoke test failed — $RUN"
             echo
-            echo "- transcript pass: **$T**"
-            echo "- frames pass: **$F**"
+            echo "- keyframe pass: **$K**"
+            echo "- scene-detect pass: **$S**"
             echo "- yt-dlp: \`$(yt-dlp --version)\`"
             echo
-            for f in transcript.err frames.err; do
+            for f in keyframes.err scenes.err; do
               [ -s "$f" ] || continue
               echo "<details><summary>$f (last 40 lines)</summary>"; echo; echo '```'
               tail -n 40 "$f"
