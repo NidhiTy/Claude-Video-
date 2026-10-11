@@ -1,0 +1,95 @@
+name: Network smoke test
+
+# The Tests workflow is fully offline. yt-dlp and YouTube change on their own
+# schedule, so once a week run the real pipeline against one stable public video
+# (a transcript-only pass and a frames pass) with the newest yt-dlp. A failure
+# opens (or comments on) one tracking issue; the next green run closes it.
+# Never part of a PR check: a YouTube outage must not block unrelated work.
+
+on:
+  schedule:
+    - cron: "41 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+env:
+  # "Me at the zoo": 19 s, the first YouTube upload, human captions, never going away.
+  VIDEO: https://www.youtube.com/watch?v=jNQXAC9IVRw
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg and the newest yt-dlp
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+          python -m pip install -q -U yt-dlp
+          yt-dlp --version
+          ffmpeg -version | head -1
+
+      - name: Transcript (captions, no Whisper)
+        id: transcript
+        run: |
+          set -o pipefail
+          python skills/watch/scripts/watch.py "$VIDEO" --detail transcript --no-whisper \
+            --out-dir "$RUNNER_TEMP/t" 2> transcript.err | tee transcript.md
+          grep -Eq '\*\*Transcript:\*\* [1-9][0-9]* segments' transcript.md
+
+      - name: Frames (efficient)
+        id: frames
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          python skills/watch/scripts/watch.py "$VIDEO" --detail efficient --no-whisper \
+            --out-dir "$RUNNER_TEMP/f" 2> frames.err | tee frames.md
+          test "$(find "$RUNNER_TEMP/f/frames" -name '*.jpg' | wc -l)" -gt 0
+          grep -Eq '\*\*Frames:\*\* [1-9][0-9]* selected' frames.md
+
+      - name: Report
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          T: ${{ steps.transcript.outcome }}
+          F: ${{ steps.frames.outcome }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list --label smoke-test --state open --json number --jq '.[0].number // empty')
+          if [ "$T" = success ] && [ "$F" = success ]; then
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --comment "Smoke test green again: $RUN"
+            fi
+            exit 0
+          fi
+          {
+            echo "Weekly network smoke test failed — $RUN"
+            echo
+            echo "- transcript pass: **$T**"
+            echo "- frames pass: **$F**"
+            echo "- yt-dlp: \`$(yt-dlp --version)\`"
+            echo
+            for f in transcript.err frames.err; do
+              [ -s "$f" ] || continue
+              echo "<details><summary>$f (last 40 lines)</summary>"; echo; echo '```'
+              tail -n 40 "$f"
+              echo '```'; echo "</details>"; echo
+            done
+            echo "A fresh yt-dlp or a YouTube change usually explains this; see the 403/player-client handling in \`download.py\`. Closes itself when a run passes."
+          } > body.md
+          gh label create smoke-test --description "Weekly network smoke test failing" --color d93f0b --force >/dev/null
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file body.md
+          else
+            gh issue create --title "Network smoke test failing" --label smoke-test --body-file body.md
+          fi
+          exit 1
