@@ -16,18 +16,20 @@ from config import (CONFIG_DIR, CONFIG_FILE, ConfigError, DETAILS, ENGINES, get_
                     load_api_key, load_gemini_key, read_env_file, resolve_engine, write_settings)
 from runtime import configure_stdio, diagnostic, run_text
 
+KEY_NAMES = {'groq': 'GROQ_API_KEY', 'openai': 'OPENAI_API_KEY', 'atlas': 'ATLASCLOUD_API_KEY'}
 REQUIRED_BINARIES = ['ffmpeg', 'ffprobe', 'yt-dlp']
 WHISPERX_VERSION = '3.8.6'
 _PERM_WARNED: set[str] = set()
 ENV_TEMPLATE = '''# /watch configuration. No shell interpolation; last assignment wins.
-# Native captions always come first. Optional fallback: auto|whisperx|groq|openai|none.
-# auto preserves the Groq-then-OpenAI preference for existing installations.
+# Native captions always come first. Optional fallback: auto|whisperx|groq|openai|atlas|none.
+# auto preserves the Groq-then-OpenAI preference for existing installations, then tries Atlas Cloud.
 # The first-run skill wizard sets WATCH_DETAIL and WATCH_WHISPER_BACKEND.
 # WATCH_ENGINE=auto|gemini|local. auto uses Gemini when GEMINI_API_KEY is set.
 # With the gemini engine, local videos are uploaded to Google for analysis.
 GEMINI_API_KEY=
 GROQ_API_KEY=
 OPENAI_API_KEY=
+ATLASCLOUD_API_KEY=
 '''
 
 
@@ -155,7 +157,7 @@ def _status(detailed=False):
     chosen = cfg['whisper_backend']
     backend = detected if chosen == 'auto' else chosen
     local_ready = _whisperx_status(cfg, detailed)
-    backend_ready = local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
+    backend_ready = local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai', 'atlas') else chosen == 'none')
     blocked = bool(missing) and binaries_required
     result = {'status': 'needs_install' if blocked else 'ready', 'can_proceed': not blocked,
               'engine': engine, 'configured_engine': cfg['engine'], 'gemini_key_present': gemini_key,
@@ -228,8 +230,8 @@ def cmd_install(backend=None, detail=None, engine=None):
         return install_whisperx()
     if backend:
         write_settings({'WATCH_WHISPER_BACKEND': backend}, CONFIG_FILE)
-        if backend in ('groq', 'openai') and not load_api_key(backend)[1]:
-            print(f'[setup] Base watch is ready. Add {backend.upper()}_API_KEY privately to {CONFIG_FILE}, then rerun --backend {backend}.', file=sys.stderr)
+        if backend in ('groq', 'openai', 'atlas') and not load_api_key(backend)[1]:
+            print(f'[setup] Base watch is ready. Add {KEY_NAMES[backend]} privately to {CONFIG_FILE}, then rerun --backend {backend}.', file=sys.stderr)
             return 3
         _write_setup_complete()
     print(f'[setup] Base watch is ready. Configuration: {CONFIG_FILE}')
@@ -318,7 +320,7 @@ def main():
     mode.add_argument('--check', action='store_true')
     mode.add_argument('--json', action='store_true')
     mode.add_argument('--install-whisperx', action='store_true')
-    parser.add_argument('--backend', choices=['auto', 'whisperx', 'groq', 'openai', 'none'])
+    parser.add_argument('--backend', choices=['auto', 'whisperx', 'groq', 'openai', 'atlas', 'none'])
     parser.add_argument('--detail', choices=sorted(DETAILS))
     parser.add_argument('--engine', choices=sorted(ENGINES))
     args = parser.parse_args()

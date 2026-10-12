@@ -39,6 +39,13 @@ def test_key_present_is_ready(monkeypatch):
     assert setup._status()['can_proceed']
 
 
+def test_atlas_key_is_ready(monkeypatch):
+    monkeypatch.setenv('ATLASCLOUD_API_KEY', 'test-only')
+    status = setup._status()
+    assert status['whisper_backend'] == 'atlas'
+    assert status['has_api_key'] and status['can_proceed']
+
+
 def test_missing_binaries_are_independent_of_keys(monkeypatch):
     monkeypatch.setattr(setup, '_check_binaries', lambda: ['ffprobe'])
     monkeypatch.setenv('GROQ_API_KEY', 'test-only')

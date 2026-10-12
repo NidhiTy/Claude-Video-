@@ -68,6 +68,15 @@ def test_provider_preference_precedes_location(monkeypatch):
     assert config.load_api_key('openai') == ('openai', 'environment-test')
 
 
+def test_atlas_key_is_last_in_auto_and_selectable(monkeypatch):
+    monkeypatch.setenv('ATLASCLOUD_API_KEY', 'atlas-test')
+    assert config.load_api_key() == ('atlas', 'atlas-test')
+    assert config.load_api_key('atlas') == ('atlas', 'atlas-test')
+    monkeypatch.setenv('OPENAI_API_KEY', 'openai-test')
+    assert config.load_api_key() == ('openai', 'openai-test')
+    assert config.load_api_key('atlas') == ('atlas', 'atlas-test')
+
+
 def test_user_file_beats_project_file(monkeypatch):
     config.write_settings({'GROQ_API_KEY': 'user-test'})
     Path('.env').write_text('GROQ_API_KEY=project-test\n')
