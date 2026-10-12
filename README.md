@@ -1,3 +1,5 @@
+**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+
 # /watch
 
 Give an agent video evidence: a URL or local file becomes timestamped frames and a transcript. Install it in Claude Code (the desktop app, VS Code, or a terminal), or use it with Codex and other [Agent Skills](https://agentskills.io) hosts. Native captions come first; optional local WhisperX or Groq/OpenAI transcription handles videos without captions.
