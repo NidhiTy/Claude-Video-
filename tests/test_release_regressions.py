@@ -44,7 +44,7 @@ def test_optional_hours_entities_and_independent_repetition(tmp_path):
     ]
 
 
-@pytest.mark.parametrize('backend', ['groq', 'openai'])
+@pytest.mark.parametrize('backend', ['groq', 'openai', 'atlas'])
 def test_helper_resolves_only_matching_key(monkeypatch, tmp_path, backend):
     def key(preferred=None):
         assert preferred == backend

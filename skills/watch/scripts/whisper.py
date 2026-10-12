@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transcribe a video via local WhisperX or the Groq/OpenAI Whisper APIs.
+"""Transcribe a video via local WhisperX, the Groq/OpenAI Whisper APIs, or Atlas Cloud Seed ASR.
 
 Strategy: extract audio (mono 16kHz mp3, tiny payload), upload to whichever
 API has a key. Returns segments in the same shape as transcribe.parse_vtt so
@@ -33,6 +33,13 @@ GROQ_MODEL = "whisper-large-v3"
 
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
+
+ATLAS_UPLOAD_ENDPOINT = "https://api.atlascloud.ai/api/v1/model/uploadMedia"
+ATLAS_GENERATE_ENDPOINT = "https://api.atlascloud.ai/api/v1/model/generateAudio"
+ATLAS_PREDICTION_ENDPOINT = "https://api.atlascloud.ai/api/v1/model/prediction"
+ATLAS_MODEL = "bytedance/seed-asr-2.0"
+ATLAS_MAX_POLLS = 120
+ATLAS_POLL_DELAY = 2.0
 
 # Both Groq's free tier and OpenAI whisper-1 cap uploads at 25 MB. We target a
 # margin under that so multipart framing overhead never pushes a chunk over.
@@ -250,6 +257,202 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
     )
 
 
+def _request_json_once(request: Request, label: str, timeout: int) -> dict:
+    """Execute one HTTP request and decode a JSON object without retrying."""
+    try:
+        with urlopen(
+            request,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        ) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(f"{label} failed: HTTP {exc.code}{_read_error_body(exc)}")
+    except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError) as exc:
+        raise SystemExit(f"{label} failed: {type(exc).__name__}: {exc}")
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"{label} returned non-JSON response: {exc}: {raw[:200]}")
+    if not isinstance(payload, dict):
+        raise SystemExit(f"{label} returned an unexpected JSON value")
+
+    code = payload.get("code")
+    if code not in (None, 0, 200, "0", "200"):
+        message = str(payload.get("message") or payload.get("msg") or "request rejected")
+        raise SystemExit(f"{label} failed: API code {code}: {message[:300]}")
+    return payload
+
+
+def _atlas_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent": "watch-skill/1.0 (+agent-skill; python-urllib)",
+    }
+
+
+def _atlas_upload_audio(api_key: str, audio_path: Path) -> str:
+    """Upload one audio file to Atlas Cloud exactly once and return its URL."""
+    body, boundary = _build_multipart({}, audio_path)
+    headers = _atlas_headers(api_key)
+    headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    request = Request(ATLAS_UPLOAD_ENDPOINT, data=body, headers=headers, method="POST")
+    payload = _request_json_once(request, "Atlas Cloud media upload", timeout=300)
+    data = payload.get("data") or {}
+    download_url = data.get("download_url") if isinstance(data, dict) else None
+    if not isinstance(download_url, str) or not download_url.startswith("https://"):
+        raise SystemExit("Atlas Cloud media upload returned no HTTPS download URL")
+    return download_url
+
+
+def _atlas_submit_transcription(api_key: str, audio_url: str) -> str:
+    """Submit one Seed ASR prediction exactly once and return its ID."""
+    body = json.dumps(
+        {
+            "model": ATLAS_MODEL,
+            "audio_url": audio_url,
+            "format": "mp3",
+            "enable_itn": True,
+            "enable_punc": True,
+            "show_utterances": True,
+        }
+    ).encode("utf-8")
+    headers = _atlas_headers(api_key)
+    headers["Content-Type"] = "application/json"
+    request = Request(ATLAS_GENERATE_ENDPOINT, data=body, headers=headers, method="POST")
+    payload = _request_json_once(request, "Atlas Cloud ASR submission", timeout=60)
+    data = payload.get("data") or {}
+    prediction_id = data.get("id") if isinstance(data, dict) else None
+    if not prediction_id:
+        raise SystemExit("Atlas Cloud ASR submission returned no prediction ID")
+    print(f"[watch] Atlas Cloud ASR submitted: {prediction_id}", file=sys.stderr)
+    return str(prediction_id)
+
+
+def _atlas_poll_transcription(api_key: str, prediction_id: str) -> dict:
+    """Poll a Seed ASR prediction with a fixed upper bound."""
+    endpoint = f"{ATLAS_PREDICTION_ENDPOINT}/{prediction_id}"
+    for attempt in range(ATLAS_MAX_POLLS):
+        request = Request(endpoint, headers=_atlas_headers(api_key), method="GET")
+        payload = _request_json_once(request, "Atlas Cloud ASR status", timeout=30)
+        data = payload.get("data") or {}
+        if not isinstance(data, dict):
+            raise SystemExit("Atlas Cloud ASR status returned invalid prediction data")
+
+        status = str(data.get("status") or "").lower()
+        if status in ("completed", "succeeded"):
+            return data
+        if status in ("failed", "canceled", "cancelled"):
+            error = str(data.get("error") or data.get("message") or "prediction failed")
+            raise SystemExit(f"Atlas Cloud ASR failed: {error[:300]}")
+        if attempt < ATLAS_MAX_POLLS - 1:
+            time.sleep(ATLAS_POLL_DELAY)
+
+    raise SystemExit(
+        f"Atlas Cloud ASR timed out after {ATLAS_MAX_POLLS * ATLAS_POLL_DELAY:.0f}s"
+    )
+
+
+def _segments_from_atlas_response(data: dict) -> list[dict]:
+    """Convert Atlas Seed ASR output into {start, end, text} segments."""
+    stt_result = data.get("stt_result") or {}
+    words = stt_result.get("words") if isinstance(stt_result, dict) else None
+    entries = words if isinstance(words, list) else []
+    utterances = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("type") == "utterance"
+    ]
+    selected = utterances or _merge_atlas_words(entries)
+
+    segments: list[dict] = []
+    for entry in selected:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("text") or "").strip()
+        if not text:
+            continue
+        segments.append(
+            {
+                "start": round(float(entry.get("start") or 0.0), 2),
+                "end": round(float(entry.get("end") or 0.0), 2),
+                "text": text,
+            }
+        )
+
+    if not segments:
+        full = ""
+        duration = 0.0
+        if isinstance(stt_result, dict):
+            full = str(stt_result.get("text") or "").strip()
+            duration = float(stt_result.get("duration") or 0.0)
+        if not full:
+            outputs = data.get("outputs") or []
+            if isinstance(outputs, list) and outputs:
+                full = str(outputs[0] or "").strip()
+        if full:
+            segments.append({"start": 0.0, "end": round(duration, 2), "text": full})
+    return segments
+
+
+def _merge_atlas_words(entries: list) -> list[dict]:
+    """Group word-level Atlas timestamps into readable transcript segments."""
+    merged: list[dict] = []
+    current: dict | None = None
+    terminal = (".", "?", "!", "。", "？", "！")
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        token = str(entry.get("text") or "").strip()
+        if not token:
+            continue
+        start = float(entry.get("start") or 0.0)
+        end = float(entry.get("end") or start)
+
+        if current is not None and start - current["end"] >= 1.25:
+            merged.append(current)
+            current = None
+
+        if current is None:
+            current = {"start": start, "end": end, "text": token}
+        else:
+            current["text"] = _join_asr_token(current["text"], token)
+            current["end"] = end
+
+        if token.endswith(terminal) or current["end"] - current["start"] >= 8.0:
+            merged.append(current)
+            current = None
+
+    if current is not None:
+        merged.append(current)
+    return merged
+
+
+def _join_asr_token(text: str, token: str) -> str:
+    """Join ASR tokens without adding spaces around punctuation or CJK text."""
+    no_space_before = ",.!?;:%)]}'\"，。！？；：、"
+    no_space_after = "([{\"'“‘"
+    if (
+        token[0] in no_space_before
+        or text[-1] in no_space_after
+        or (_is_cjk(text[-1]) and _is_cjk(token[0]))
+    ):
+        return text + token
+    return f"{text} {token}"
+
+
+def _is_cjk(char: str) -> bool:
+    return "\u3400" <= char <= "\u9fff"
+
+
+def _post_atlas_asr(api_key: str, audio_path: Path) -> dict:
+    audio_url = _atlas_upload_audio(api_key, audio_path)
+    prediction_id = _atlas_submit_transcription(api_key, audio_url)
+    return _atlas_poll_transcription(api_key, prediction_id)
+
+
 def _read_error_body(exc: urllib.error.HTTPError) -> str:
     try:
         body = exc.read()
@@ -339,6 +542,8 @@ def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+    elif backend == "atlas":
+        response = {"segments": _segments_from_atlas_response(_post_atlas_asr(api_key, audio_path))}
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
     return _segments_from_response(response)
@@ -355,14 +560,14 @@ def transcribe_video(
     Returns (segments, backend_used). Raises SystemExit on any failure.
     """
     if api_key is not None and backend is None:
-        raise SystemExit("An API key requires an explicit groq or openai backend.")
+        raise SystemExit("An API key requires an explicit groq, openai, or atlas backend.")
     if backend == "whisperx":
         if api_key is not None:
             raise SystemExit("WhisperX does not accept an API key.")
         from local_whisperx import transcribe_audio
         segments = transcribe_audio(extract_audio(video_path, audio_out))
         return segments, "whisperx"
-    if backend not in (None, "groq", "openai"):
+    if backend not in (None, "groq", "openai", "atlas"):
         raise SystemExit("Unknown transcription backend.")
     if backend is None or api_key is None:
         detected_backend, detected_key = load_api_key(preferred=backend)
@@ -372,7 +577,7 @@ def transcribe_video(
     if not backend or not api_key:
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
-            "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
+            "No transcription API key available. Set GROQ_API_KEY (preferred), OPENAI_API_KEY, or ATLASCLOUD_API_KEY "
             "in the environment or in ~/.config/watch/.env. "
             f"Run `python3 {setup_py}` to configure."
         )
@@ -416,7 +621,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Transcribe local media with the selected Whisper backend.")
     parser.add_argument("video")
     parser.add_argument("audio_out", nargs="?", default="audio.mp3", type=Path)
-    parser.add_argument("--backend", choices=["groq", "openai", "whisperx"])
+    parser.add_argument("--backend", choices=["groq", "openai", "atlas", "whisperx"])
     args = parser.parse_args()
     try:
         segments, backend = transcribe_video(args.video, Path(args.audio_out), backend=args.backend)
