@@ -186,6 +186,34 @@ def static_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
+CLOCK_SECONDS = 40
+CLOCK_STEP = 5      # grey level rises by this much each second: 16, 21, 26 … 211
+
+
+def build_clock_clip(path: Path, seconds: int = CLOCK_SECONDS, fps: int = 10) -> None:
+    """A clip whose pixels ARE its timestamp: second k is solid grey 16 + 5k.
+
+    Reading a frame's mean luma tells which second it came from, independently of
+    any timestamp the code under test computes, so it can catch a frame that is
+    labelled with the wrong time. Encoded losslessly (-qp 0) with a keyframe every
+    second, so neither compression nor seeking blurs adjacent levels.
+    """
+    _run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-t", str(seconds), "-i", f"color=c=black:s=64x64:r={fps}",
+        "-vf", f"format=gray,geq=lum='16+{CLOCK_STEP}*floor(T)',format=yuv420p",
+        "-c:v", "libx264", "-qp", "0", "-g", str(fps),
+        str(path),
+    ])
+
+
+@pytest.fixture(scope="session")
+def clock_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    path = tmp_path_factory.mktemp("clips") / "clock.mp4"
+    build_clock_clip(path)
+    return path
+
+
 @pytest.fixture(scope="session")
 def long_cut_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A longer (~42s) clip with visibly changing content, for uniform

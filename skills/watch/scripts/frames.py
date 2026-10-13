@@ -318,7 +318,8 @@ def extract(
     cmd: list[str] = [
         "ffmpeg",
         "-hide_banner",
-        "-loglevel", "error",
+        # info, not error: showinfo below logs each selected frame's real pts there.
+        "-loglevel", "info",
         "-y",
     ]
 
@@ -328,9 +329,23 @@ def extract(
     if end_seconds is not None:
         cmd += ["-to", f"{end_seconds:.3f}"]
 
+    # Timestamps are READ, not computed. This used `fps=N` and labelled frame i as
+    # start + i/N, but the fps filter rounds input times to the nearest output tick
+    # and emits a frame from the MIDDLE of each interval, then rewrites its pts to
+    # the tick. So every uniform frame was labelled half an interval early (~10 s on
+    # a 17-minute video). `select` keeps each frame's source pts, and showinfo
+    # prints it. The rule picks the first frame of each fixed bucket floor(t/T)
+    # rather than "T after the previous pick", so a pick that lands a frame late
+    # cannot push every later bucket late with it.
+    interval = 1.0 / effective_fps if effective_fps > 0 else max(range_duration, 1.0)
+    select = (
+        f"select='isnan(prev_selected_t)+gt(floor(t/{interval:.6f})\\,"
+        f"floor(prev_selected_t/{interval:.6f}))'"
+    )
     cmd += [
         "-i", str(Path(video_path).resolve()),
-        "-vf", f"fps={effective_fps},{_scale_filter(resolution)}",
+        "-vf", f"{select},{_scale_filter(resolution)},showinfo",
+        *_vfr_flag(),
         # Rounding backstop only (an odd extra boundary frame) — effective_fps
         # above is what actually decides coverage now, not this cap.
         "-frames:v", str(max_frames),
@@ -343,16 +358,21 @@ def extract(
         raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
 
     offset = range_start
+    times = [float(m.group(1)) for m in SHOWINFO_TS_RE.finditer(result.stderr)]
     frames = sorted(out_dir.glob(f"{prefix}_*.jpg"))
-    return [
-        {
+    out = []
+    for i, p in enumerate(frames):
+        # showinfo prints one line per written frame, in order. If a build ever
+        # prints fewer (it shouldn't), fall back to the bucket start for that frame
+        # rather than misaligning every later label.
+        t = times[i] if i < len(times) else i * interval
+        out.append({
             "index": i,
-            "timestamp_seconds": round(offset + (i / effective_fps if effective_fps > 0 else 0.0), 2),
+            "timestamp_seconds": round(offset + t, 2),
             "path": str(p),
             "reason": "uniform",
-        }
-        for i, p in enumerate(frames)
-    ]
+        })
+    return out
 
 
 def extract_scene_candidates(
