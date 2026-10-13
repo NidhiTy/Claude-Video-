@@ -2,6 +2,12 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **agy engine.** `--engine agy` / `WATCH_ENGINE=agy` downloads the video (≤720p), extracts its audio, and has Gemini answer through the user's signed-in [Antigravity](https://antigravity.google) CLI — no API key. agy runs headless without `--dangerously-skip-permissions` and gets `--add-dir` for the run's work dir only. `WATCH_AGY_MODEL`, `WATCH_AGY_TIMEOUT`, `WATCH_AGY_BIN` tune it.
+- **agy transcription backend.** `--whisper agy` / `WATCH_WHISPER_BACKEND=agy` transcribes caption-less audio in 10-minute chunks via `WATCH_AGY_TRANSCRIBE_MODEL`, restoring source-time offsets. In `auto`, agy is used when no Groq/OpenAI key is present and `agy` is installed.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed
